@@ -1,16 +1,19 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { forwardRef } from 'react';
-import { Pressable, StyleSheet } from 'react-native';
+import { Pressable, StyleSheet, useColorScheme } from 'react-native';
 
 export const HeaderButton = forwardRef<typeof Pressable, { onPress?: () => void }>(
   ({ onPress }, ref) => {
+    const colorScheme = useColorScheme();
+    const iconColor = colorScheme === 'dark' ? 'white' : 'gray';
+    
     return (
       <Pressable onPress={onPress}>
         {({ pressed }) => (
           <FontAwesome
             name="info-circle"
             size={25}
-            color="gray"
+            color={iconColor}
             style={[
               styles.headerRight,
               {

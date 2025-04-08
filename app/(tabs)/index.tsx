@@ -1,473 +1,616 @@
-import { useActionSheet } from '@expo/react-native-action-sheet';
-import { LegendList } from '@legendapp/list';
-import { useHeaderHeight } from '@react-navigation/elements';
-import { Icon } from '@roninoss/icons';
 import { Stack } from 'expo-router';
-import * as StoreReview from 'expo-store-review';
-import { cssInterop } from 'nativewind';
 import * as React from 'react';
 import {
   Button as RNButton,
-  ButtonProps,
-  Linking,
-  Platform,
-  Share,
-  useWindowDimensions,
   View,
-  Alert,
+  TouchableOpacity,
+  Text,
+  Modal,
+  TextInput,
+  FlatList,
+  StyleSheet,
+  Dimensions,
+  Animated,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { BottomSheetModal, BottomSheetModalProvider, BottomSheetBackdrop } from '@gorhom/bottom-sheet';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import TimeCard from '~/components/TimeCard';
+import AsyncStorage from '@react-native-async-storage/async-storage'
 
-import { Container } from '~/components/Container';
-import { ActivityIndicator } from '~/components/nativewindui/ActivityIndicator';
-import { Avatar, AvatarFallback, AvatarImage } from '~/components/nativewindui/Avatar';
-import { DatePicker } from '~/components/nativewindui/DatePicker';
-import { Picker, PickerItem } from '~/components/nativewindui/Picker';
-import { ProgressIndicator } from '~/components/nativewindui/ProgressIndicator';
-import { Sheet, useSheetRef } from '~/components/nativewindui/Sheet';
-import { Slider } from '~/components/nativewindui/Slider';
-import { Text } from '~/components/nativewindui/Text';
-import { Toggle } from '~/components/nativewindui/Toggle';
-import { useColorScheme } from '~/lib/useColorScheme';
-import { useHeaderSearchBar } from '~/lib/useHeaderSearchBar';
+// Define type for time tracking session
+type TimeSession = {
+  id: string;
+  category: string;
+  subCategory: string;
+  title: string;
+  startTime: Date;
+  endTime?: Date;
+  isActive: boolean;
+  saved?: boolean; // New property to track saved sessions
+};
+
+// Key for storing sessions in AsyncStorage
+const STORAGE_KEY = 'time_sessions';
 
 export default function Home() {
-  const searchValue = useHeaderSearchBar({ hideWhenScrolling: COMPONENTS.length === 0 });
+  const [createModalVisible, setCreateModalVisible] = React.useState(false);
+  const [category, setCategory] = React.useState<string | null>(null);
+  const [subCategory, setSubCategory] = React.useState('');
+  const [title, setTitle] = React.useState('');
+  const [sessions, setSessions] = React.useState<TimeSession[]>([]);
+  const [activeSession, setActiveSession] = React.useState<TimeSession | null>(null);
+  const [selectedSession, setSelectedSession] = React.useState<TimeSession | null>(null);
+  const [currentTime, setCurrentTime] = React.useState(new Date());
+  const [isLoading, setIsLoading] = React.useState(true);
+  
+  // Bottom sheet references
+  const bottomSheetModalRef = React.useRef<BottomSheetModal>(null);
+  const snapPoints = React.useMemo(() => ['65%', '75%'], []);
 
-  const data = searchValue
-    ? COMPONENTS.filter((c) => c.name.toLowerCase().includes(searchValue.toLowerCase()))
-    : COMPONENTS;
+  const categories = ["Goal", "Health", "Unwilling"];
 
-  return (
-    <>
-      <Stack.Screen options={{ title: 'Tab One' }} />
-      <Container>
-        <LegendList
-          contentInsetAdjustmentBehavior="automatic"
-          keyboardShouldPersistTaps="handled"
-          data={data}
-          estimatedItemSize={200}
-          contentContainerClassName="py-4 android:pb-12"
-          extraData={searchValue}
-          removeClippedSubviews={false} // used for selecting text on android
-          keyExtractor={keyExtractor}
-          ItemSeparatorComponent={renderItemSeparator}
-          renderItem={renderItem}
-          ListEmptyComponent={COMPONENTS.length === 0 ? ListEmptyComponent : undefined}
-          recycleItems
-        />
-      </Container>
-    </>
+  // Load sessions from AsyncStorage when component mounts
+  React.useEffect(() => {
+    loadSessions();
+  }, []);
+
+  // Update timer every second
+  React.useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    
+    return () => clearInterval(timer);
+  }, []);
+
+  // Save sessions to AsyncStorage whenever sessions change
+  React.useEffect(() => {
+    if (!isLoading) {
+      saveSessions();
+    }
+  }, [sessions]);
+
+  // Load sessions from AsyncStorage
+  const loadSessions = async () => {
+    try {
+      const storedSessions = await AsyncStorage.getItem(STORAGE_KEY);
+      if (storedSessions) {
+        const parsedSessions = JSON.parse(storedSessions);
+        
+        // Convert string dates back to Date objects
+        const sessionsWithDates = parsedSessions.map((session: any) => ({
+          ...session,
+          startTime: new Date(session.startTime),
+          endTime: session.endTime ? new Date(session.endTime) : undefined
+        }));
+        
+        setSessions(sessionsWithDates);
+        
+        // Check if there's an active session
+        const active = sessionsWithDates.find((session: TimeSession) => session.isActive);
+        if (active) {
+          setActiveSession(active);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load sessions from storage', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Save sessions to AsyncStorage
+  const saveSessions = async () => {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    } catch (error) {
+      console.error('Failed to save sessions to storage', error);
+    }
+  };
+
+  const handleOpenBottomSheet = (session: TimeSession) => {
+    setSelectedSession(session);
+    bottomSheetModalRef.current?.present();
+  };
+
+  const handleCloseBottomSheet = () => {
+    bottomSheetModalRef.current?.dismiss();
+    setSelectedSession(null);
+  };
+
+  // Custom backdrop component for bottom sheet
+  const renderBackdrop = React.useCallback(
+    (props: any) => (
+      <BottomSheetBackdrop
+        {...props}
+        disappearsOnIndex={-1}
+        appearsOnIndex={0}
+        opacity={0.5}
+      />
+    ),
+    []
   );
-}
 
-cssInterop(LegendList, {
-  className: 'style',
-  contentContainerClassName: 'contentContainerStyle',
-});
+  const startSession = () => {
+    if (!category || subCategory.trim() === '' || title.trim() === '') {
+      return; // Don't start if fields are empty
+    }
 
-function DefaultButton({ color, ...props }: ButtonProps) {
-  const { colors } = useColorScheme();
-  return <RNButton color={color ?? colors.primary} {...props} />;
-}
+    const newSession: TimeSession = {
+      id: Date.now().toString(),
+      category: category,
+      subCategory: subCategory,
+      title: title,
+      startTime: new Date(),
+      isActive: true,
+      saved: false,
+    };
 
-function ListEmptyComponent() {
-  const insets = useSafeAreaInsets();
-  const dimensions = useWindowDimensions();
-  const headerHeight = useHeaderHeight();
-  const { colors } = useColorScheme();
-  const height = dimensions.height - headerHeight - insets.bottom - insets.top;
+    setSessions(prev => [newSession, ...prev]);
+    setActiveSession(newSession);
+    resetForm();
+    setCreateModalVisible(false);
+  };
 
-  return (
-    <View style={{ height }} className="flex-1 items-center justify-center gap-1 px-12">
-      <Icon name="file-plus-outline" size={42} color={colors.grey} />
-      <Text variant="title3" className="pb-1 text-center font-semibold">
-        No Components Installed
-      </Text>
-      <Text color="tertiary" variant="subhead" className="pb-4 text-center">
-        You can install any of the free components from the{' '}
-        <Text
-          onPress={() => Linking.openURL('https://nativewindui.com')}
-          variant="subhead"
-          className="text-primary">
-          NativeWindUI
-        </Text>
-        {' website.'}
-      </Text>
-    </View>
-  );
-}
+  // New function to save a session without starting it
+  const saveWithoutStarting = () => {
+    if (!category || subCategory.trim() === '' || title.trim() === '') {
+      return; // Don't save if fields are empty
+    }
 
-type ComponentItem = { name: string; component: React.FC };
+    const newSession: TimeSession = {
+      id: Date.now().toString(),
+      category: category,
+      subCategory: subCategory,
+      title: title,
+      startTime: new Date(),
+      isActive: false,
+      saved: true,
+    };
 
-function keyExtractor(item: ComponentItem) {
-  return item.name;
-}
+    setSessions(prev => [newSession, ...prev]);
+    resetForm();
+    setCreateModalVisible(false);
+  };
 
-function renderItemSeparator() {
-  return <View className="p-2" />;
-}
+  const saveSession = () => {
+    if (activeSession) {
+      setSessions(prev => 
+        prev.map(session => 
+          session.id === activeSession.id 
+            ? { ...session, endTime: new Date(), isActive: false } 
+            : session
+        )
+      );
+      setActiveSession(null);
+    }
+  };
 
-function renderItem({ item }: { item: ComponentItem }) {
-  return (
-    <Card title={item.name}>
-      <item.component />
-    </Card>
-  );
-}
+  const updateSession = () => {
+    if (selectedSession) {
+      setSessions(prev => 
+        prev.map(session => 
+          session.id === selectedSession.id 
+            ? { 
+                ...session, 
+                category: category || session.category,
+                subCategory: subCategory || session.subCategory,
+                title: title || session.title
+              } 
+            : session
+        )
+      );
+      resetForm();
+      handleCloseBottomSheet();
+    }
+  };
 
-function Card({ children, title }: { children: React.ReactNode; title: string }) {
-  return (
-    <View className="px-4">
-      <View className="gap-4 rounded-xl border border-border bg-card p-4 pb-6 shadow-sm shadow-black/10 dark:shadow-none">
-        <Text className="text-center text-sm font-medium tracking-wider opacity-60">{title}</Text>
-        {children}
+  const deleteSession = () => {
+    if (selectedSession) {
+      setSessions(prev => prev.filter(session => session.id !== selectedSession.id));
+      
+      // If we're deleting the active session, clear it
+      if (activeSession && activeSession.id === selectedSession.id) {
+        setActiveSession(null);
+      }
+      
+      handleCloseBottomSheet();
+    }
+  };
+
+  const resetForm = () => {
+    setCategory(null);
+    setSubCategory('');
+    setTitle('');
+  };
+
+  const prepareEditSession = (session: TimeSession) => {
+    setCategory(session.category);
+    setSubCategory(session.subCategory);
+    setTitle(session.title);
+  };
+
+  const formatDuration = (startTime: Date, endTime?: Date) => {
+    const end = endTime || new Date();
+    const diffMs = end.getTime() - startTime.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const hours = Math.floor(diffMins / 60);
+    const mins = diffMins % 60;
+    const secs = Math.floor((diffMs % 60000) / 1000);
+    
+    return `${hours > 0 ? `${hours.toString().padStart(2, '0')}:` : ''}${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatTimerDisplay = (startTime: Date, currentTime: Date) => {
+    const diffMs = currentTime.getTime() - startTime.getTime();
+    const hours = Math.floor(diffMs / 3600000);
+    const mins = Math.floor((diffMs % 3600000) / 60000);
+    const secs = Math.floor((diffMs % 60000) / 1000);
+    
+    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatTime = (date: Date) => {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  // Display loading state
+  if (isLoading) {
+    return (
+      <View className="flex-1 justify-center items-center bg-white dark:bg-gray-900">
+        <Text className="text-gray-800 dark:text-gray-100">Loading sessions...</Text>
       </View>
-    </View>
+    );
+  }
+
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <BottomSheetModalProvider>
+        <View className='flex-1 bg-white dark:bg-gray-900'>
+          <View className='flex-1 p-4'>
+            
+            {/* Time Card  */}
+            <View className='mb-4'>
+              <TimeCard time={formatTimerDisplay(currentTime, currentTime)} onTimeChange={() => {}} />
+            </View>
+
+            {/* Sessions List */}
+            <Text className='text-md font-semibold mb-4 text-gray-400 dark:text-gray-100'>Sessions</Text>
+            
+            {sessions.length === 0 ? (
+              <View className='flex-1 justify-center items-center'>
+                <Text className='text-gray-500 dark:text-gray-400'>No sessions yet. Tap + to start tracking time.</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={sessions}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }) => (
+                  <TouchableOpacity 
+                    onPress={() => {
+                      handleOpenBottomSheet(item);
+                      prepareEditSession(item);
+                    }}
+                    className={`p-4 rounded-3xl mb-3 border border-gray-200 dark:border-gray-700 ${
+                      item.isActive 
+                        ? 'bg-white dark:bg-gray-800' 
+                        : 'bg-white dark:bg-gray-800'
+                    }`}
+                  >
+                    {item.isActive ? (
+                      // Active session UI (like second image)
+                      <View className='flex-row items-center'>
+                        <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
+                          <Ionicons name="desktop-outline" size={20} color="white" />
+                        </View>
+                        <View className='flex-1'>
+                          <Text className='text-lg font-bold text-gray-800 dark:text-gray-100'>
+                            {item.subCategory}
+                          </Text>
+                          <Text className='text-sm text-gray-500 dark:text-gray-300'>
+                            {item.category}
+                          </Text>
+                        </View>
+                        <View className='items-end'>
+                          <Text className='text-xl font-bold text-gray-900 dark:text-gray-100'>
+                            {formatTimerDisplay(item.startTime, currentTime)}
+                          </Text>
+                          <TouchableOpacity 
+                            onPress={() => {
+                              // Pause the active session
+                              saveSession();
+                            }}
+                            className='mt-1'
+                          >
+                            <Ionicons name="pause" size={24} color="#6C5CE7" />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ) : (
+                      // Paused or saved session UI (like first image)
+                      <View className='flex-row items-center'>
+                        <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
+                          <Ionicons name="desktop-outline" size={20} color="white" />
+                        </View>
+                        <View className='flex-1'>
+                          <Text className='text-sm text-gray-500 dark:text-gray-400'>
+                            {item.category}
+                          </Text>
+                          <Text className='text-base font-medium text-gray-800 dark:text-gray-100'>
+                            {item.subCategory}
+                          </Text>
+                        </View>
+                        <View className='items-end'>
+                          <Text className='text-sm text-gray-500 dark:text-gray-400'>
+                            {item.saved ? '' : formatDuration(item.startTime, item.endTime)}
+                          </Text>
+                          <TouchableOpacity 
+                            onPress={() => {
+                              // Start the session
+                              const updatedSession = {...item, isActive: true, saved: false, startTime: new Date()};
+                              setSessions(prev => 
+                                prev.map(session => 
+                                  session.id === item.id ? updatedSession : session
+                                )
+                              );
+                              setActiveSession(updatedSession);
+                            }}
+                            className='mt-1'
+                          >
+                            <Ionicons name="play" size={24} color="#6C5CE7" />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+
+            {/* Add Session Floating Button */}
+            <TouchableOpacity
+              onPress={() => {
+                resetForm();
+                setCreateModalVisible(true);
+              }}
+              disabled={!!activeSession} // Disable if there's an active session
+              className={`absolute bottom-6 self-center w-14 h-14 rounded-full justify-center items-center shadow-lg ${
+                activeSession ? 'bg-gray-400' : 'bg-blue-500'
+              }`}
+            >
+              <Ionicons name="add" size={30} color="white" />
+            </TouchableOpacity>
+
+            {/* Create Time Tracking Modal */}
+            <Modal
+              animationType="fade"
+              transparent={true}
+              visible={createModalVisible}
+              onRequestClose={() => setCreateModalVisible(false)}
+            >
+              <View className='flex-1 justify-center items-center bg-black/40 px-5'>
+                <View className='bg-white dark:bg-gray-800 rounded-3xl p-5 w-full max-w-lg'>
+                  <Text className='text-2xl font-bold mb-6 text-center text-gray-800 dark:text-gray-100'>What are you up to?</Text>
+                  
+                  {/* Category Selection */}
+                  <View className='flex-row flex-wrap mb-4'>
+                    {categories.map((cat) => (
+                      <TouchableOpacity
+                        key={cat}
+                        onPress={() => setCategory(cat)}
+                        className={`mr-2 mb-2 px-4 py-2 rounded-full ${
+                          category === cat 
+                            ? 'bg-purple-500' 
+                            : 'bg-gray-200 dark:bg-gray-700'
+                        }`}
+                      >
+                        <Text 
+                          className={`${
+                            category === cat 
+                              ? 'text-white' 
+                              : 'text-gray-800 dark:text-gray-200'
+                          }`}
+                        >
+                          {cat}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  
+                  {/* Sub-category Input */}
+                  <TextInput
+                    className='bg-gray-100 dark:bg-gray-700 p-3 rounded-xl mb-4 text-gray-800 dark:text-gray-100'
+                    placeholder="Label this session (e.g. Writing, Gym, Scrolling)"
+                    placeholderTextColor="#9ca3af"
+                    value={subCategory}
+                    onChangeText={setSubCategory}
+                  />
+                  
+                  {/* Title Input */}
+                  <TextInput
+                    className='bg-gray-100 dark:bg-gray-700 p-3 rounded-xl mb-6 text-gray-800 dark:text-gray-100'
+                    placeholder="Name this activity"
+                    placeholderTextColor="#9ca3af"
+                    value={title}
+                    onChangeText={setTitle}
+                  />
+                  
+                  {/* Action Buttons */}
+                  <View className='flex-row justify-between mb-2'>
+                    <TouchableOpacity 
+                      onPress={startSession}
+                      disabled={!category || subCategory.trim() === '' || title.trim() === ''}
+                      className={`flex-row items-center justify-center bg-purple-500 rounded-xl py-3 flex-1 mr-2 ${
+                        (!category || subCategory.trim() === '' || title.trim() === '')
+                          ? 'opacity-50' 
+                          : ''
+                      }`}
+                    >
+                      <Ionicons name="play" size={18} color="white" style={{ marginRight: 5 }} />
+                      <Text className='text-white font-medium text-center'>
+                        Track Now
+                      </Text>
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity 
+                      onPress={saveWithoutStarting}
+                      disabled={!category || subCategory.trim() === '' || title.trim() === ''}
+                      className={`flex-row items-center justify-center bg-green-500 rounded-xl py-3 flex-1 mx-2 ${
+                        (!category || subCategory.trim() === '' || title.trim() === '')
+                          ? 'opacity-50' 
+                          : ''
+                      }`}
+                    >
+                      <Ionicons name="save-outline" size={18} color="white" style={{ marginRight: 5 }} />
+                      <Text className='text-white font-medium text-center'>
+                        Save
+                      </Text>
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity 
+                      onPress={() => {
+                        resetForm();
+                        setCreateModalVisible(false);
+                      }}
+                      className='bg-gray-200 dark:bg-gray-700 rounded-xl py-3 flex-1 ml-2'
+                    >
+                      <Text className='text-gray-500 dark:text-gray-200 font-medium text-center'>
+                        Cancel
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
+            {/* Edit Session Bottom Sheet */}
+            <BottomSheetModal
+              ref={bottomSheetModalRef}
+              index={0}
+              snapPoints={snapPoints}
+              backgroundStyle={{ backgroundColor: '#fff' }}
+              handleIndicatorStyle={{ backgroundColor: '#999' }}
+              backdropComponent={renderBackdrop}
+            >
+              <View className='p-6'>
+                <Text className='text-2xl font-bold mb-6 text-center text-gray-800'>Edit Session</Text>
+                
+                {/* Category Selection */}
+                <Text className='font-medium mb-2 text-gray-700'>Category</Text>
+                <View className='flex-row flex-wrap mb-4'>
+                  {categories.map((cat) => (
+                    <TouchableOpacity
+                      key={cat}
+                      onPress={() => setCategory(cat)}
+                      className={`mr-2 mb-2 px-4 py-2 rounded-full ${
+                        category === cat 
+                          ? 'bg-purple-500' 
+                          : 'bg-gray-200'
+                      }`}
+                    >
+                      <Text 
+                        className={`${
+                          category === cat 
+                            ? 'text-white' 
+                            : 'text-gray-800'
+                        }`}
+                      >
+                        {cat}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                
+                {/* Sub-category Input */}
+                <Text className='font-medium mb-2 text-gray-700'>Sub-category</Text>
+                <TextInput
+                  className='bg-gray-100 p-3 rounded-xl mb-4 text-gray-800'
+                  placeholder="Enter sub-category"
+                  placeholderTextColor="#9ca3af"
+                  value={subCategory}
+                  onChangeText={setSubCategory}
+                />
+                
+                {/* Title Input */}
+                <Text className='font-medium mb-2 text-gray-700'>Title</Text>
+                <TextInput
+                  className='bg-gray-100 p-3 rounded-xl mb-6 text-gray-800'
+                  placeholder="What are you working on?"
+                  placeholderTextColor="#9ca3af"
+                  value={title}
+                  onChangeText={setTitle}
+                />
+                
+                {/* Action Buttons */}
+                <View className='flex-row justify-between mb-4'>
+                  <TouchableOpacity 
+                    onPress={updateSession}
+                    className='flex-row items-center justify-center bg-purple-500 rounded-xl py-3 flex-1 mr-2'
+                  >
+                    <Ionicons name="checkmark" size={18} color="white" style={{ marginRight: 5 }} />
+                    <Text className='text-white font-medium text-center'>
+                      Update
+                    </Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    onPress={handleCloseBottomSheet}
+                    className='bg-gray-200 rounded-xl py-3 flex-1 ml-2'
+                  >
+                    <Text className='text-gray-700 font-medium text-center'>
+                      Cancel
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                
+                {/* Additional buttons for saved sessions */}
+                {selectedSession?.saved && !selectedSession?.isActive && (
+                  <TouchableOpacity 
+                    onPress={() => {
+                      // Start the saved session
+                      if (selectedSession) {
+                        const updatedSession = {
+                          ...selectedSession, 
+                          isActive: true, 
+                          saved: false, 
+                          startTime: new Date()
+                        };
+                        setSessions(prev => 
+                          prev.map(session => 
+                            session.id === selectedSession.id ? updatedSession : session
+                          )
+                        );
+                        setActiveSession(updatedSession);
+                        handleCloseBottomSheet();
+                      }
+                    }}
+                    className='flex-row items-center justify-center bg-green-500 rounded-xl py-3 w-full mb-4'
+                  >
+                    <Ionicons name="play" size={18} color="white" style={{ marginRight: 5 }} />
+                    <Text className='text-white font-medium text-center'>
+                      Start Session
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                
+                {/* Delete Button */}
+                <TouchableOpacity 
+                  onPress={deleteSession}
+                  className='flex-row items-center justify-center bg-red-500 rounded-xl py-3 w-full'
+                >
+                  <Ionicons name="trash-outline" size={18} color="white" style={{ marginRight: 5 }} />
+                  <Text className='text-white font-medium text-center'>
+                    Delete Session
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </BottomSheetModal>
+          </View>
+        </View>
+      </BottomSheetModalProvider>
+    </GestureHandlerRootView>
   );
 }
 
-let hasRequestedReview = false;
-
-const COMPONENTS: ComponentItem[] = [
-  {
-    name: 'Picker',
-    component: function PickerExample() {
-      const { colors } = useColorScheme();
-      const [picker, setPicker] = React.useState('blue');
-      return (
-        <Picker selectedValue={picker} onValueChange={(itemValue) => setPicker(itemValue)}>
-          <PickerItem
-            label="Red"
-            value="red"
-            color={colors.foreground}
-            style={{
-              backgroundColor: colors.root,
-            }}
-          />
-          <PickerItem
-            label="Blue"
-            value="blue"
-            color={colors.foreground}
-            style={{
-              backgroundColor: colors.root,
-            }}
-          />
-          <PickerItem
-            label="Green"
-            value="green"
-            color={colors.foreground}
-            style={{
-              backgroundColor: colors.root,
-            }}
-          />
-        </Picker>
-      );
-    },
-  },
-
-  {
-    name: 'Date Picker',
-    component: function DatePickerExample() {
-      const [date, setDate] = React.useState(new Date());
-      return (
-        <View className="items-center">
-          <DatePicker
-            value={date}
-            mode="datetime"
-            onChange={(ev) => {
-              setDate(new Date(ev.nativeEvent.timestamp));
-            }}
-          />
-        </View>
-      );
-    },
-  },
-
-  {
-    name: 'Slider',
-    component: function SliderExample() {
-      const [sliderValue, setSliderValue] = React.useState(0.5);
-      return <Slider value={sliderValue} onValueChange={setSliderValue} />;
-    },
-  },
-
-  {
-    name: 'Toggle',
-    component: function ToggleExample() {
-      const [switchValue, setSwitchValue] = React.useState(true);
-      return (
-        <View className="items-center">
-          <Toggle value={switchValue} onValueChange={setSwitchValue} />
-        </View>
-      );
-    },
-  },
-
-  {
-    name: 'Progress Indicator',
-    component: function ProgressIndicatorExample() {
-      const [progress, setProgress] = React.useState(13);
-      let id: ReturnType<typeof setInterval> | null = null;
-      React.useEffect(() => {
-        if (!id) {
-          id = setInterval(() => {
-            setProgress((prev) => (prev >= 99 ? 0 : prev + 5));
-          }, 1000);
-        }
-        return () => {
-          if (id) clearInterval(id);
-        };
-      }, []);
-      return (
-        <View className="p-4">
-          <ProgressIndicator value={progress} />
-        </View>
-      );
-    },
-  },
-
-  {
-    name: 'Activity Indicator',
-    component: function ActivityIndicatorExample() {
-      return (
-        <View className="items-center p-4">
-          <ActivityIndicator />
-        </View>
-      );
-    },
-  },
-
-  {
-    name: 'Action Sheet',
-    component: function ActionSheetExample() {
-      const { colorScheme, colors } = useColorScheme();
-      const { showActionSheetWithOptions } = useActionSheet();
-      return (
-        <View className="items-center">
-          <DefaultButton
-            color="grey"
-            onPress={async () => {
-              const options = ['Delete', 'Save', 'Cancel'];
-              const destructiveButtonIndex = 0;
-              const cancelButtonIndex = 2;
-
-              showActionSheetWithOptions(
-                {
-                  options,
-                  cancelButtonIndex,
-                  destructiveButtonIndex,
-                  containerStyle: {
-                    backgroundColor: colorScheme === 'dark' ? 'black' : 'white',
-                  },
-                  textStyle: {
-                    color: colors.foreground,
-                  },
-                },
-                (selectedIndex) => {
-                  switch (selectedIndex) {
-                    case 1:
-                      // Save
-                      break;
-
-                    case destructiveButtonIndex:
-                      // Delete
-                      break;
-
-                    case cancelButtonIndex:
-                    // Canceled
-                  }
-                }
-              );
-            }}
-            title="Open action sheet"
-          />
-        </View>
-      );
-    },
-  },
-
-  {
-    name: 'Text',
-    component: function TextExample() {
-      return (
-        <View className="gap-2">
-          <Text variant="largeTitle" className="text-center">
-            Large Title
-          </Text>
-          <Text variant="title1" className="text-center">
-            Title 1
-          </Text>
-          <Text variant="title2" className="text-center">
-            Title 2
-          </Text>
-          <Text variant="title3" className="text-center">
-            Title 3
-          </Text>
-          <Text variant="heading" className="text-center">
-            Heading
-          </Text>
-          <Text variant="body" className="text-center">
-            Body
-          </Text>
-          <Text variant="callout" className="text-center">
-            Callout
-          </Text>
-          <Text variant="subhead" className="text-center">
-            Subhead
-          </Text>
-          <Text variant="footnote" className="text-center">
-            Footnote
-          </Text>
-          <Text variant="caption1" className="text-center">
-            Caption 1
-          </Text>
-          <Text variant="caption2" className="text-center">
-            Caption 2
-          </Text>
-        </View>
-      );
-    },
-  },
-  {
-    name: 'Selectable Text',
-    component: function SelectableTextExample() {
-      return (
-        <Text uiTextView selectable>
-          Long press or double press this text
-        </Text>
-      );
-    },
-  },
-
-  {
-    name: 'Ratings Indicator',
-    component: function RatingsIndicatorExample() {
-      React.useEffect(() => {
-        async function showRequestReview() {
-          if (hasRequestedReview) return;
-          try {
-            if (await StoreReview.hasAction()) {
-              await StoreReview.requestReview();
-            }
-          } catch (error) {
-            console.log(
-              'FOR ANDROID: Make sure you meet all conditions to be able to test and use it: https://developer.android.com/guide/playcore/in-app-review/test#troubleshooting',
-              error
-            );
-          } finally {
-            hasRequestedReview = true;
-          }
-        }
-        const timeout = setTimeout(() => {
-          showRequestReview();
-        }, 1000);
-
-        return () => clearTimeout(timeout);
-      }, []);
-
-      return (
-        <View className="gap-3">
-          <Text className="pb-2 text-center font-semibold">Please follow the guidelines.</Text>
-          <View className="flex-row">
-            <Text className="w-6 text-center text-muted-foreground">·</Text>
-            <View className="flex-1">
-              <Text variant="caption1" className="text-muted-foreground">
-                Don't call StoreReview.requestReview() from a button
-              </Text>
-            </View>
-          </View>
-          <View className="flex-row">
-            <Text className="w-6 text-center text-muted-foreground">·</Text>
-            <View className="flex-1">
-              <Text variant="caption1" className="text-muted-foreground">
-                Don't request a review when the user is doing something time sensitive.
-              </Text>
-            </View>
-          </View>
-          <View className="flex-row">
-            <Text className="w-6 text-center text-muted-foreground">·</Text>
-            <View className="flex-1">
-              <Text variant="caption1" className="text-muted-foreground">
-                Don't ask the user any questions before or while presenting the rating button or
-                card.
-              </Text>
-            </View>
-          </View>
-        </View>
-      );
-    },
-  },
-
-  {
-    name: 'Activity View',
-    component: function ActivityViewExample() {
-      return (
-        <View className="items-center">
-          <DefaultButton
-            onPress={async () => {
-              try {
-                const result = await Share.share({
-                  message: 'NativeWindUI | Familiar interface, native feel.',
-                });
-                if (result.action === Share.sharedAction) {
-                  if (result.activityType) {
-                    // shared with activity type of result.activityType
-                  } else {
-                    // shared
-                  }
-                } else if (result.action === Share.dismissedAction) {
-                  // dismissed
-                }
-              } catch (error: any) {
-                Alert.alert(error.message);
-              }
-            }}
-            title="Share a message"
-          />
-        </View>
-      );
-    },
-  },
-
-  {
-    name: 'Bottom Sheet',
-    component: function BottomSheetExample() {
-      const { colorScheme } = useColorScheme();
-      const bottomSheetModalRef = useSheetRef();
-
-      return (
-        <View className="items-center">
-          <DefaultButton
-            color={colorScheme === 'dark' && Platform.OS === 'ios' ? 'white' : 'black'}
-            title="Open Bottom Sheet"
-            onPress={() => bottomSheetModalRef.current?.present()}
-          />
-          <Sheet ref={bottomSheetModalRef} snapPoints={[200]}>
-            <View className="flex-1 items-center justify-center pb-8">
-              <Text>@gorhom/bottom-sheet 🎉</Text>
-            </View>
-          </Sheet>
-        </View>
-      );
-    },
-  },
-
-  {
-    name: 'Avatar',
-    component: function AvatarExample() {
-      const TWITTER_AVATAR_URI =
-        'https://pbs.twimg.com/profile_images/1782428433898708992/1voyv4_A_400x400.jpg';
-      return (
-        <View className="items-center">
-          <Avatar alt="NativeWindUI Avatar">
-            <AvatarImage source={{ uri: TWITTER_AVATAR_URI }} />
-            <AvatarFallback>
-              <Text>NUI</Text>
-            </AvatarFallback>
-          </Avatar>
-        </View>
-      );
-    },
-  },
-];
