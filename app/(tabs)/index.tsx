@@ -18,23 +18,17 @@ import { BottomSheetModal, BottomSheetModalProvider, BottomSheetBackdrop } from 
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import TimeCard from '~/components/TimeCard';
 import AsyncStorage from '@react-native-async-storage/async-storage'
-
-// Define type for time tracking session
-type TimeSession = {
-  id: string;
-  category: string;
-  subCategory: string;
-  title: string;
-  startTime: Date;
-  endTime?: Date;
-  isActive: boolean;
-  saved?: boolean; // New property to track saved sessions
-};
+import { syncSessionsWithFirebase, updateFirebaseSessions } from '~/services/firebaseService';
+import { TimeSession } from '~/types/timeSession';
+import { useAuth } from '~/contexts/AuthContext';
+import { useRouter } from 'expo-router';
 
 // Key for storing sessions in AsyncStorage
-const STORAGE_KEY = 'time_sessions';
+const getStorageKey = (userId: string) => `time_sessions_${userId}`;
 
 export default function Home() {
+  const router = useRouter();
+  const { user } = useAuth();
   const [createModalVisible, setCreateModalVisible] = React.useState(false);
   const [category, setCategory] = React.useState<string | null>(null);
   const [subCategory, setSubCategory] = React.useState('');
@@ -44,17 +38,25 @@ export default function Home() {
   const [selectedSession, setSelectedSession] = React.useState<TimeSession | null>(null);
   const [currentTime, setCurrentTime] = React.useState(new Date());
   const [isLoading, setIsLoading] = React.useState(true);
-  
+  const [isOnline, setIsOnline] = React.useState(true);
+  const [isSyncing, setIsSyncing] = React.useState(false);
+
   // Bottom sheet references
   const bottomSheetModalRef = React.useRef<BottomSheetModal>(null);
   const snapPoints = React.useMemo(() => ['65%', '75%'], []);
 
   const categories = ["Goal", "Health", "Unwilling"];
 
-  // Load sessions from AsyncStorage when component mounts
+  // Load sessions when component mounts or user changes
   React.useEffect(() => {
-    loadSessions();
-  }, []);
+    if (user) {
+      loadSessions();
+    } else {
+      // Clear sessions when no user
+      setSessions([]);
+      setActiveSession(null);
+    }
+  }, [user]);
 
   // Update timer every second
   React.useEffect(() => {
@@ -65,50 +67,109 @@ export default function Home() {
     return () => clearInterval(timer);
   }, []);
 
-  // Save sessions to AsyncStorage whenever sessions change
+  // Add sync effect with network state handling
   React.useEffect(() => {
-    if (!isLoading) {
-      saveSessions();
-    }
-  }, [sessions]);
+    if (!user || isSyncing) return;
 
-  // Load sessions from AsyncStorage
+    const syncData = async () => {
+      try {
+        setIsSyncing(true);
+        if (!isOnline) return;
+        
+        const syncedSessions = await syncSessionsWithFirebase(user.uid);
+        if (syncedSessions) {
+          setSessions(syncedSessions);
+          // Check for active session after sync
+          const active = syncedSessions.find(session => session.isActive);
+          if (active) {
+            setActiveSession(active);
+          }
+        }
+      } catch (error: any) {
+        console.error('Sync error:', error);
+        if (error.code === 'firestore/permission-denied') {
+          setIsOnline(false);
+        }
+      } finally {
+        setIsSyncing(false);
+      }
+    };
+
+    // Initial sync
+    syncData();
+
+    // Set up periodic sync (every 5 minutes)
+    const syncInterval = setInterval(() => {
+      if (isOnline && !isSyncing) {
+        syncData();
+      }
+    }, 5 * 60 * 1000);
+
+    return () => clearInterval(syncInterval);
+  }, [user, isOnline, isSyncing]);
+
+  // Load sessions from AsyncStorage and Firebase
   const loadSessions = async () => {
+    if (!user) return;
+
     try {
-      const storedSessions = await AsyncStorage.getItem(STORAGE_KEY);
-      if (storedSessions) {
-        const parsedSessions = JSON.parse(storedSessions);
-        
-        // Convert string dates back to Date objects
-        const sessionsWithDates = parsedSessions.map((session: any) => ({
-          ...session,
-          startTime: new Date(session.startTime),
-          endTime: session.endTime ? new Date(session.endTime) : undefined
-        }));
-        
-        setSessions(sessionsWithDates);
-        
-        // Check if there's an active session
-        const active = sessionsWithDates.find((session: TimeSession) => session.isActive);
+      setIsLoading(true);
+      // Try to get sessions from Firebase first
+      const syncedSessions = await syncSessionsWithFirebase(user.uid);
+      if (syncedSessions) {
+        setSessions(syncedSessions);
+        // Check for active session
+        const active = syncedSessions.find(session => session.isActive);
         if (active) {
           setActiveSession(active);
         }
       }
     } catch (error) {
-      console.error('Failed to load sessions from storage', error);
+      console.error('Failed to load sessions:', error);
+      // If Firebase fails, try to get from local storage
+      try {
+        const storedSessions = await AsyncStorage.getItem(getStorageKey(user.uid));
+        if (storedSessions) {
+          const parsedSessions = JSON.parse(storedSessions);
+          const sessionsWithDates = parsedSessions.map((session: any) => ({
+            ...session,
+            startTime: new Date(session.startTime),
+            endTime: session.endTime ? new Date(session.endTime) : undefined
+          }));
+          setSessions(sessionsWithDates);
+          const active = sessionsWithDates.find((session: TimeSession) => session.isActive);
+          if (active) {
+            setActiveSession(active);
+          }
+        }
+      } catch (localError) {
+        console.error('Failed to load local sessions:', localError);
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Save sessions to AsyncStorage
+  // Save sessions to both AsyncStorage and Firebase
   const saveSessions = async () => {
+    if (!user) return;
+
     try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+      await AsyncStorage.setItem(getStorageKey(user.uid), JSON.stringify(sessions));
+      if (isOnline) {
+        await updateFirebaseSessions(user.uid, sessions);
+      }
     } catch (error) {
-      console.error('Failed to save sessions to storage', error);
+      console.error('Failed to save sessions:', error);
     }
   };
+
+  // Add effect to save sessions when they change
+  React.useEffect(() => {
+    if (!isLoading && user && sessions.length > 0) {
+      saveSessions();
+    }
+  }, [sessions, user]);
 
   const handleOpenBottomSheet = (session: TimeSession) => {
     setSelectedSession(session);
@@ -133,9 +194,9 @@ export default function Home() {
     []
   );
 
-  const startSession = () => {
-    if (!category || subCategory.trim() === '' || title.trim() === '') {
-      return; // Don't start if fields are empty
+  const startSession = async () => {
+    if (!category || subCategory.trim() === '' || title.trim() === '' || !user) {
+      return; // Don't start if fields are empty or no user
     }
 
     const newSession: TimeSession = {
@@ -155,9 +216,9 @@ export default function Home() {
   };
 
   // New function to save a session without starting it
-  const saveWithoutStarting = () => {
-    if (!category || subCategory.trim() === '' || title.trim() === '') {
-      return; // Don't save if fields are empty
+  const saveWithoutStarting = async () => {
+    if (!category || subCategory.trim() === '' || title.trim() === '' || !user) {
+      return; // Don't save if fields are empty or no user
     }
 
     const newSession: TimeSession = {
@@ -175,41 +236,40 @@ export default function Home() {
     setCreateModalVisible(false);
   };
 
-  const saveSession = () => {
+  const saveSession = async () => {
     if (activeSession) {
-      setSessions(prev => 
-        prev.map(session => 
-          session.id === activeSession.id 
-            ? { ...session, endTime: new Date(), isActive: false } 
-            : session
-        )
+      const updatedSessions = sessions.map(session => 
+        session.id === activeSession.id 
+          ? { ...session, endTime: new Date(), isActive: false } 
+          : session
       );
+      setSessions(updatedSessions);
       setActiveSession(null);
     }
   };
 
-  const updateSession = () => {
+  const updateSession = async () => {
     if (selectedSession) {
-      setSessions(prev => 
-        prev.map(session => 
-          session.id === selectedSession.id 
-            ? { 
-                ...session, 
-                category: category || session.category,
-                subCategory: subCategory || session.subCategory,
-                title: title || session.title
-              } 
-            : session
-        )
+      const updatedSessions = sessions.map(session => 
+        session.id === selectedSession.id 
+          ? { 
+              ...session, 
+              category: category || session.category,
+              subCategory: subCategory || session.subCategory,
+              title: title || session.title
+            } 
+          : session
       );
+      setSessions(updatedSessions);
       resetForm();
       handleCloseBottomSheet();
     }
   };
 
-  const deleteSession = () => {
+  const deleteSession = async () => {
     if (selectedSession) {
-      setSessions(prev => prev.filter(session => session.id !== selectedSession.id));
+      const updatedSessions = sessions.filter(session => session.id !== selectedSession.id);
+      setSessions(updatedSessions);
       
       // If we're deleting the active session, clear it
       if (activeSession && activeSession.id === selectedSession.id) {

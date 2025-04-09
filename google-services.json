@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "224311261552",
+    "project_id": "timemaster-afbad",
+    "storage_bucket": "timemaster-afbad.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:224311261552:android:44e371b9a7085b52ab77b5",
+        "android_client_info": {
+          "package_name": "com.healthydrugs.timemasterv2"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "224311261552-vtrkb2qk8ct844u6s9uri12iqopvf761.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.healthydrugs.timemasterv2",
+            "certificate_hash": "53caebb9b23a845faff50dbfa01b8abe270f3cf3"
+          }
+        },
+        {
+          "client_id": "224311261552-6q6388s1ma2cbspj2iqfh158psv49knd.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAOJrNOzc0szbZkHT0Xr2TCnDiRiBNCwNo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "224311261552-6q6388s1ma2cbspj2iqfh158psv49knd.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
