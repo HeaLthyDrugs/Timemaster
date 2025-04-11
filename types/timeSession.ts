@@ -7,4 +7,5 @@ export type TimeSession = {
   endTime?: Date;
   isActive: boolean;
   saved?: boolean;
+  elapsedTime?: number; // Total elapsed time in milliseconds
 }; 

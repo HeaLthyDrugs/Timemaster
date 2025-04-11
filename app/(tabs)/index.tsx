@@ -1,7 +1,6 @@
 import { Stack } from 'expo-router';
 import * as React from 'react';
 import {
-  Button as RNButton,
   View,
   TouchableOpacity,
   Text,
@@ -11,52 +10,48 @@ import {
   StyleSheet,
   Dimensions,
   Animated,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheetModal, BottomSheetModalProvider, BottomSheetBackdrop } from '@gorhom/bottom-sheet';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import TimeCard from '~/components/TimeCard';
-import AsyncStorage from '@react-native-async-storage/async-storage'
-import { syncSessionsWithFirebase, updateFirebaseSessions } from '~/services/firebaseService';
-import { TimeSession } from '~/types/timeSession';
-import { useAuth } from '~/contexts/AuthContext';
+import { useSessionManager } from '~/hooks/useSessionManager';
 import { useRouter } from 'expo-router';
+import { Swipeable, RectButton } from 'react-native-gesture-handler';
+import { TimeSession } from '~/types/timeSession';
 
-// Key for storing sessions in AsyncStorage
-const getStorageKey = (userId: string) => `time_sessions_${userId}`;
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function Home() {
   const router = useRouter();
-  const { user } = useAuth();
   const [createModalVisible, setCreateModalVisible] = React.useState(false);
   const [category, setCategory] = React.useState<string | null>(null);
   const [subCategory, setSubCategory] = React.useState('');
   const [title, setTitle] = React.useState('');
-  const [sessions, setSessions] = React.useState<TimeSession[]>([]);
-  const [activeSession, setActiveSession] = React.useState<TimeSession | null>(null);
   const [selectedSession, setSelectedSession] = React.useState<TimeSession | null>(null);
   const [currentTime, setCurrentTime] = React.useState(new Date());
-  const [isLoading, setIsLoading] = React.useState(true);
-  const [isOnline, setIsOnline] = React.useState(true);
-  const [isSyncing, setIsSyncing] = React.useState(false);
+
+  // Refs for swipeable items to properly close them
+  const swipeableRefs = React.useRef<{ [key: string]: Swipeable | null }>({});
+
+  const {
+    sessions,
+    activeSession,
+    isLoading,
+    startSession: startNewSession,
+    stopSession,
+    resumeSession,
+    deleteSession,
+    updateSession,
+  } = useSessionManager();
 
   // Bottom sheet references
   const bottomSheetModalRef = React.useRef<BottomSheetModal>(null);
   const snapPoints = React.useMemo(() => ['65%', '75%'], []);
 
   const categories = ["Goal", "Health", "Unwilling"];
-
-  // Load sessions when component mounts or user changes
-  React.useEffect(() => {
-    if (user) {
-      loadSessions();
-    } else {
-      // Clear sessions when no user
-      setSessions([]);
-      setActiveSession(null);
-    }
-  }, [user]);
 
   // Update timer every second
   React.useEffect(() => {
@@ -67,111 +62,10 @@ export default function Home() {
     return () => clearInterval(timer);
   }, []);
 
-  // Add sync effect with network state handling
-  React.useEffect(() => {
-    if (!user || isSyncing) return;
-
-    const syncData = async () => {
-      try {
-        setIsSyncing(true);
-        if (!isOnline) return;
-        
-        const syncedSessions = await syncSessionsWithFirebase(user.uid);
-        if (syncedSessions) {
-          setSessions(syncedSessions);
-          // Check for active session after sync
-          const active = syncedSessions.find(session => session.isActive);
-          if (active) {
-            setActiveSession(active);
-          }
-        }
-      } catch (error: any) {
-        console.error('Sync error:', error);
-        if (error.code === 'firestore/permission-denied') {
-          setIsOnline(false);
-        }
-      } finally {
-        setIsSyncing(false);
-      }
-    };
-
-    // Initial sync
-    syncData();
-
-    // Set up periodic sync (every 5 minutes)
-    const syncInterval = setInterval(() => {
-      if (isOnline && !isSyncing) {
-        syncData();
-      }
-    }, 5 * 60 * 1000);
-
-    return () => clearInterval(syncInterval);
-  }, [user, isOnline, isSyncing]);
-
-  // Load sessions from AsyncStorage and Firebase
-  const loadSessions = async () => {
-    if (!user) return;
-
-    try {
-      setIsLoading(true);
-      // Try to get sessions from Firebase first
-      const syncedSessions = await syncSessionsWithFirebase(user.uid);
-      if (syncedSessions) {
-        setSessions(syncedSessions);
-        // Check for active session
-        const active = syncedSessions.find(session => session.isActive);
-        if (active) {
-          setActiveSession(active);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to load sessions:', error);
-      // If Firebase fails, try to get from local storage
-      try {
-        const storedSessions = await AsyncStorage.getItem(getStorageKey(user.uid));
-        if (storedSessions) {
-          const parsedSessions = JSON.parse(storedSessions);
-          const sessionsWithDates = parsedSessions.map((session: any) => ({
-            ...session,
-            startTime: new Date(session.startTime),
-            endTime: session.endTime ? new Date(session.endTime) : undefined
-          }));
-          setSessions(sessionsWithDates);
-          const active = sessionsWithDates.find((session: TimeSession) => session.isActive);
-          if (active) {
-            setActiveSession(active);
-          }
-        }
-      } catch (localError) {
-        console.error('Failed to load local sessions:', localError);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Save sessions to both AsyncStorage and Firebase
-  const saveSessions = async () => {
-    if (!user) return;
-
-    try {
-      await AsyncStorage.setItem(getStorageKey(user.uid), JSON.stringify(sessions));
-      if (isOnline) {
-        await updateFirebaseSessions(user.uid, sessions);
-      }
-    } catch (error) {
-      console.error('Failed to save sessions:', error);
-    }
-  };
-
-  // Add effect to save sessions when they change
-  React.useEffect(() => {
-    if (!isLoading && user && sessions.length > 0) {
-      saveSessions();
-    }
-  }, [sessions, user]);
-
   const handleOpenBottomSheet = (session: TimeSession) => {
+    // Close any open swipeables first
+    Object.values(swipeableRefs.current).forEach(ref => ref?.close());
+    
     setSelectedSession(session);
     bottomSheetModalRef.current?.present();
   };
@@ -195,32 +89,26 @@ export default function Home() {
   );
 
   const startSession = async () => {
-    if (!category || subCategory.trim() === '' || title.trim() === '' || !user) {
-      return; // Don't start if fields are empty or no user
+    if (!category || subCategory.trim() === '' || title.trim() === '') {
+      return;
     }
 
-    const newSession: TimeSession = {
-      id: Date.now().toString(),
-      category: category,
-      subCategory: subCategory,
-      title: title,
-      startTime: new Date(),
-      isActive: true,
-      saved: false,
-    };
+    await startNewSession({
+      category,
+      subCategory,
+      title,
+    });
 
-    setSessions(prev => [newSession, ...prev]);
-    setActiveSession(newSession);
     resetForm();
     setCreateModalVisible(false);
   };
 
-  // New function to save a session without starting it
   const saveWithoutStarting = async () => {
-    if (!category || subCategory.trim() === '' || title.trim() === '' || !user) {
-      return; // Don't save if fields are empty or no user
+    if (!category || subCategory.trim() === '' || title.trim() === '') {
+      return;
     }
 
+    // Create a new session with saved flag set to true
     const newSession: TimeSession = {
       id: Date.now().toString(),
       category: category,
@@ -229,56 +117,36 @@ export default function Home() {
       startTime: new Date(),
       isActive: false,
       saved: true,
+      elapsedTime: 0, // Initialize with zero elapsed time
     };
 
-    setSessions(prev => [newSession, ...prev]);
+    // This will now add the session to the list
+    await updateSession(newSession);
+    
     resetForm();
     setCreateModalVisible(false);
   };
 
-  const saveSession = async () => {
-    if (activeSession) {
-      const updatedSessions = sessions.map(session => 
-        session.id === activeSession.id 
-          ? { ...session, endTime: new Date(), isActive: false } 
-          : session
-      );
-      setSessions(updatedSessions);
-      setActiveSession(null);
-    }
-  };
-
-  const updateSession = async () => {
+  const handleUpdateSession = React.useCallback(async () => {
     if (selectedSession) {
-      const updatedSessions = sessions.map(session => 
-        session.id === selectedSession.id 
-          ? { 
-              ...session, 
-              category: category || session.category,
-              subCategory: subCategory || session.subCategory,
-              title: title || session.title
-            } 
-          : session
-      );
-      setSessions(updatedSessions);
+      const updatedSession: TimeSession = {
+        ...selectedSession,
+        category: category || selectedSession.category,
+        subCategory: subCategory || selectedSession.subCategory,
+        title: title || selectedSession.title,
+      };
+      await updateSession(updatedSession);
       resetForm();
       handleCloseBottomSheet();
     }
-  };
+  }, [selectedSession, category, subCategory, title, updateSession]);
 
-  const deleteSession = async () => {
+  const handleDeleteSession = React.useCallback(async () => {
     if (selectedSession) {
-      const updatedSessions = sessions.filter(session => session.id !== selectedSession.id);
-      setSessions(updatedSessions);
-      
-      // If we're deleting the active session, clear it
-      if (activeSession && activeSession.id === selectedSession.id) {
-        setActiveSession(null);
-      }
-      
+      await deleteSession(selectedSession.id);
       handleCloseBottomSheet();
     }
-  };
+  }, [selectedSession, deleteSession]);
 
   const resetForm = () => {
     setCategory(null);
@@ -292,29 +160,219 @@ export default function Home() {
     setTitle(session.title);
   };
 
-  const formatDuration = (startTime: Date, endTime?: Date) => {
-    const end = endTime || new Date();
-    const diffMs = end.getTime() - startTime.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const hours = Math.floor(diffMins / 60);
-    const mins = diffMins % 60;
-    const secs = Math.floor((diffMs % 60000) / 1000);
+  const formatDuration = (startTime: Date, endTime?: Date, elapsedTime?: number) => {
+    let diffMs: number;
     
-    return `${hours > 0 ? `${hours.toString().padStart(2, '0')}:` : ''}${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    if (elapsedTime) {
+      // If we have elapsed time, use that as the base
+      diffMs = elapsedTime;
+      
+      // If the session is active, add the current run time
+      if (endTime === undefined) {
+        diffMs += new Date().getTime() - startTime.getTime();
+      }
+    } else {
+      // Fall back to simple duration calculation
+      const end = endTime || new Date();
+      diffMs = end.getTime() - startTime.getTime();
+    }
+    
+    const totalSeconds = Math.floor(diffMs / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    
+    return `${hours > 0 ? `${hours.toString().padStart(2, '0')}:` : ''}${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
-  const formatTimerDisplay = (startTime: Date, currentTime: Date) => {
-    const diffMs = currentTime.getTime() - startTime.getTime();
-    const hours = Math.floor(diffMs / 3600000);
-    const mins = Math.floor((diffMs % 3600000) / 60000);
-    const secs = Math.floor((diffMs % 60000) / 1000);
+  const formatTimerDisplay = (session: TimeSession) => {
+    if (!session) return "00:00:00";
     
-    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    if (session.isActive) {
+      // Active session - show elapsed time plus current running time
+      const elapsedMs = session.elapsedTime || 0;
+      const currentRunMs = new Date().getTime() - session.startTime.getTime();
+      const totalMs = elapsedMs + currentRunMs;
+      
+      const totalSeconds = Math.floor(totalMs / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      
+      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    } else if (session.elapsedTime !== undefined) {
+      // Completed or paused session - show just the elapsed time
+      const elapsedMs = session.elapsedTime;
+      
+      const totalSeconds = Math.floor(elapsedMs / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      
+      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+    
+    // Saved but never started session
+    return "00:00:00";
   };
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
+
+  // Render left actions (swipe right to reveal)
+  const renderLeftActions = (session: TimeSession, progress: Animated.AnimatedInterpolation<number>, dragX: Animated.AnimatedInterpolation<number>) => {
+    const trans = dragX.interpolate({
+      inputRange: [0, 50, 100, 101],
+      outputRange: [-20, 0, 0, 1],
+      extrapolate: 'clamp',
+    });
+    
+    const opacity = dragX.interpolate({
+      inputRange: [0, 50, 100],
+      outputRange: [0, 1, 1],
+      extrapolate: 'clamp',
+    });
+
+    // If session is active, show stop button; otherwise show resume button
+    const iconName = session.isActive ? "pause" : "play";
+    const actionText = session.isActive ? "Stop" : "Resume";
+    const bgColor = session.isActive ? "#FF9500" : "#6C5CE7";
+    
+    return (
+      <Animated.View style={[styles.leftAction, { opacity, transform: [{ translateX: trans }], backgroundColor: bgColor }]}>
+        <TouchableOpacity
+          style={styles.actionButton}
+          onPress={() => {
+            if (session.isActive) {
+              stopSession();
+            } else {
+              resumeSession(session.id);
+            }
+            // Close the swipeable after action
+            swipeableRefs.current[session.id]?.close();
+          }}
+        >
+          <Ionicons name={iconName} size={28} color="white" />
+          <Text style={styles.actionText}>{actionText}</Text>
+        </TouchableOpacity>
+      </Animated.View>
+    );
+  };
+
+  // Render right actions (swipe left to reveal)
+  const renderRightActions = (session: TimeSession, progress: Animated.AnimatedInterpolation<number>, dragX: Animated.AnimatedInterpolation<number>) => {
+    const trans = dragX.interpolate({
+      inputRange: [-100, -50, 0],
+      outputRange: [0, 0, 40],
+      extrapolate: 'clamp',
+    });
+    
+    const opacity = dragX.interpolate({
+      inputRange: [-100, -50, 0],
+      outputRange: [1, 1, 0],
+      extrapolate: 'clamp',
+    });
+    
+    return (
+      <Animated.View style={[styles.rightAction, { opacity, transform: [{ translateX: trans }] }]}>
+        <TouchableOpacity
+          style={[styles.actionButton, styles.deleteButton]}
+          onPress={() => {
+            deleteSession(session.id);
+            // Close the swipeable after action
+            swipeableRefs.current[session.id]?.close();
+          }}
+        >
+          <Ionicons name="trash-outline" size={28} color="white" />
+          <Text style={styles.actionText}>Delete</Text>
+        </TouchableOpacity>
+      </Animated.View>
+    );
+  };
+
+  const renderSessionItem = React.useCallback(({ item }: { item: TimeSession }) => (
+    <Swipeable
+      ref={ref => swipeableRefs.current[item.id] = ref}
+      renderLeftActions={(progress, dragX) => renderLeftActions(item, progress, dragX)}
+      renderRightActions={(progress, dragX) => renderRightActions(item, progress, dragX)}
+      friction={2}
+      leftThreshold={80}
+      rightThreshold={80}
+      overshootLeft={false}
+      overshootRight={false}
+    >
+      <Animated.View 
+        style={styles.sessionCard}
+      >
+        <TouchableOpacity 
+          onPress={() => {
+            handleOpenBottomSheet(item);
+            prepareEditSession(item);
+          }}
+          className={`p-4 rounded-3xl border border-gray-200 dark:border-gray-700 ${
+            item.isActive 
+              ? 'bg-white dark:bg-gray-800' 
+              : 'bg-white dark:bg-gray-800'
+          }`}
+        >
+          {item.isActive ? (
+            // Active session UI
+            <View className='flex-row items-center'>
+              <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
+                <Ionicons name="desktop-outline" size={20} color="white" />
+              </View>
+              <View className='flex-1'>
+                <Text className='text-lg font-bold text-gray-800 dark:text-gray-100'>
+                  {item.subCategory}
+                </Text>
+                <Text className='text-sm text-gray-500 dark:text-gray-300'>
+                  {item.category}
+                </Text>
+              </View>
+              <View className='items-end'>
+                <Text className='text-xl font-bold text-gray-900 dark:text-gray-100'>
+                  {formatTimerDisplay(item)}
+                </Text>
+                <TouchableOpacity 
+                  onPress={() => stopSession()}
+                  className='mt-1'
+                >
+                  <Ionicons name="pause" size={24} color="#6C5CE7" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            // Paused or saved session UI
+            <View className='flex-row items-center'>
+              <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
+                <Ionicons name="desktop-outline" size={20} color="white" />
+              </View>
+              <View className='flex-1'>
+                <Text className='text-sm text-gray-500 dark:text-gray-400'>
+                  {item.category}
+                </Text>
+                <Text className='text-base font-medium text-gray-800 dark:text-gray-100'>
+                  {item.subCategory}
+                </Text>
+              </View>
+              <View className='items-end'>
+                <Text className='text-sm text-gray-500 dark:text-gray-400'>
+                  {item.saved ? '' : formatTimerDisplay(item)}
+                </Text>
+                <TouchableOpacity 
+                  onPress={() => resumeSession(item.id)}
+                  className='mt-1'
+                >
+                  <Ionicons name="play" size={24} color="#6C5CE7" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        </TouchableOpacity>
+      </Animated.View>
+    </Swipeable>
+  ), [currentTime, formatTimerDisplay, handleOpenBottomSheet, prepareEditSession, renderLeftActions, renderRightActions, resumeSession, stopSession]);
 
   // Display loading state
   if (isLoading) {
@@ -333,7 +391,10 @@ export default function Home() {
             
             {/* Time Card  */}
             <View className='mb-4'>
-              <TimeCard time={formatTimerDisplay(currentTime, currentTime)} onTimeChange={() => {}} />
+              <TimeCard 
+                time={activeSession ? formatTimerDisplay(activeSession) : "00:00:00"} 
+                onTimeChange={() => {}} 
+              />
             </View>
 
             {/* Sessions List */}
@@ -347,85 +408,10 @@ export default function Home() {
               <FlatList
                 data={sessions}
                 keyExtractor={(item) => item.id}
-                renderItem={({ item }) => (
-                  <TouchableOpacity 
-                    onPress={() => {
-                      handleOpenBottomSheet(item);
-                      prepareEditSession(item);
-                    }}
-                    className={`p-4 rounded-3xl mb-3 border border-gray-200 dark:border-gray-700 ${
-                      item.isActive 
-                        ? 'bg-white dark:bg-gray-800' 
-                        : 'bg-white dark:bg-gray-800'
-                    }`}
-                  >
-                    {item.isActive ? (
-                      // Active session UI (like second image)
-                      <View className='flex-row items-center'>
-                        <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
-                          <Ionicons name="desktop-outline" size={20} color="white" />
-                        </View>
-                        <View className='flex-1'>
-                          <Text className='text-lg font-bold text-gray-800 dark:text-gray-100'>
-                            {item.subCategory}
-                          </Text>
-                          <Text className='text-sm text-gray-500 dark:text-gray-300'>
-                            {item.category}
-                          </Text>
-                        </View>
-                        <View className='items-end'>
-                          <Text className='text-xl font-bold text-gray-900 dark:text-gray-100'>
-                            {formatTimerDisplay(item.startTime, currentTime)}
-                          </Text>
-                          <TouchableOpacity 
-                            onPress={() => {
-                              // Pause the active session
-                              saveSession();
-                            }}
-                            className='mt-1'
-                          >
-                            <Ionicons name="pause" size={24} color="#6C5CE7" />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    ) : (
-                      // Paused or saved session UI (like first image)
-                      <View className='flex-row items-center'>
-                        <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
-                          <Ionicons name="desktop-outline" size={20} color="white" />
-                        </View>
-                        <View className='flex-1'>
-                          <Text className='text-sm text-gray-500 dark:text-gray-400'>
-                            {item.category}
-                          </Text>
-                          <Text className='text-base font-medium text-gray-800 dark:text-gray-100'>
-                            {item.subCategory}
-                          </Text>
-                        </View>
-                        <View className='items-end'>
-                          <Text className='text-sm text-gray-500 dark:text-gray-400'>
-                            {item.saved ? '' : formatDuration(item.startTime, item.endTime)}
-                          </Text>
-                          <TouchableOpacity 
-                            onPress={() => {
-                              // Start the session
-                              const updatedSession = {...item, isActive: true, saved: false, startTime: new Date()};
-                              setSessions(prev => 
-                                prev.map(session => 
-                                  session.id === item.id ? updatedSession : session
-                                )
-                              );
-                              setActiveSession(updatedSession);
-                            }}
-                            className='mt-1'
-                          >
-                            <Ionicons name="play" size={24} color="#6C5CE7" />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                )}
+                renderItem={renderSessionItem}
+                ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingBottom: 80 }}
               />
             )}
 
@@ -435,14 +421,14 @@ export default function Home() {
                 resetForm();
                 setCreateModalVisible(true);
               }}
-              disabled={!!activeSession} // Disable if there's an active session
-              className={`absolute bottom-6 self-center w-14 h-14 rounded-full justify-center items-center shadow-lg ${
+              disabled={!!activeSession}
+              className={`absolute bottom-6 self-center w-14 h-14 rounded-full justify-center items-center ${
                 activeSession ? 'bg-gray-400' : 'bg-blue-500'
               }`}
             >
               <Ionicons name="add" size={30} color="white" />
             </TouchableOpacity>
-
+            
             {/* Create Time Tracking Modal */}
             <Modal
               animationType="fade"
@@ -544,129 +530,6 @@ export default function Home() {
                 </View>
               </View>
             </Modal>
-
-            {/* Edit Session Bottom Sheet */}
-            <BottomSheetModal
-              ref={bottomSheetModalRef}
-              index={0}
-              snapPoints={snapPoints}
-              backgroundStyle={{ backgroundColor: '#fff' }}
-              handleIndicatorStyle={{ backgroundColor: '#999' }}
-              backdropComponent={renderBackdrop}
-            >
-              <View className='p-6'>
-                <Text className='text-2xl font-bold mb-6 text-center text-gray-800'>Edit Session</Text>
-                
-                {/* Category Selection */}
-                <Text className='font-medium mb-2 text-gray-700'>Category</Text>
-                <View className='flex-row flex-wrap mb-4'>
-                  {categories.map((cat) => (
-                    <TouchableOpacity
-                      key={cat}
-                      onPress={() => setCategory(cat)}
-                      className={`mr-2 mb-2 px-4 py-2 rounded-full ${
-                        category === cat 
-                          ? 'bg-purple-500' 
-                          : 'bg-gray-200'
-                      }`}
-                    >
-                      <Text 
-                        className={`${
-                          category === cat 
-                            ? 'text-white' 
-                            : 'text-gray-800'
-                        }`}
-                      >
-                        {cat}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                
-                {/* Sub-category Input */}
-                <Text className='font-medium mb-2 text-gray-700'>Sub-category</Text>
-                <TextInput
-                  className='bg-gray-100 p-3 rounded-xl mb-4 text-gray-800'
-                  placeholder="Enter sub-category"
-                  placeholderTextColor="#9ca3af"
-                  value={subCategory}
-                  onChangeText={setSubCategory}
-                />
-                
-                {/* Title Input */}
-                <Text className='font-medium mb-2 text-gray-700'>Title</Text>
-                <TextInput
-                  className='bg-gray-100 p-3 rounded-xl mb-6 text-gray-800'
-                  placeholder="What are you working on?"
-                  placeholderTextColor="#9ca3af"
-                  value={title}
-                  onChangeText={setTitle}
-                />
-                
-                {/* Action Buttons */}
-                <View className='flex-row justify-between mb-4'>
-                  <TouchableOpacity 
-                    onPress={updateSession}
-                    className='flex-row items-center justify-center bg-purple-500 rounded-xl py-3 flex-1 mr-2'
-                  >
-                    <Ionicons name="checkmark" size={18} color="white" style={{ marginRight: 5 }} />
-                    <Text className='text-white font-medium text-center'>
-                      Update
-                    </Text>
-                  </TouchableOpacity>
-                  
-                  <TouchableOpacity 
-                    onPress={handleCloseBottomSheet}
-                    className='bg-gray-200 rounded-xl py-3 flex-1 ml-2'
-                  >
-                    <Text className='text-gray-700 font-medium text-center'>
-                      Cancel
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                
-                {/* Additional buttons for saved sessions */}
-                {selectedSession?.saved && !selectedSession?.isActive && (
-                  <TouchableOpacity 
-                    onPress={() => {
-                      // Start the saved session
-                      if (selectedSession) {
-                        const updatedSession = {
-                          ...selectedSession, 
-                          isActive: true, 
-                          saved: false, 
-                          startTime: new Date()
-                        };
-                        setSessions(prev => 
-                          prev.map(session => 
-                            session.id === selectedSession.id ? updatedSession : session
-                          )
-                        );
-                        setActiveSession(updatedSession);
-                        handleCloseBottomSheet();
-                      }
-                    }}
-                    className='flex-row items-center justify-center bg-green-500 rounded-xl py-3 w-full mb-4'
-                  >
-                    <Ionicons name="play" size={18} color="white" style={{ marginRight: 5 }} />
-                    <Text className='text-white font-medium text-center'>
-                      Start Session
-                    </Text>
-                  </TouchableOpacity>
-                )}
-                
-                {/* Delete Button */}
-                <TouchableOpacity 
-                  onPress={deleteSession}
-                  className='flex-row items-center justify-center bg-red-500 rounded-xl py-3 w-full'
-                >
-                  <Ionicons name="trash-outline" size={18} color="white" style={{ marginRight: 5 }} />
-                  <Text className='text-white font-medium text-center'>
-                    Delete Session
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </BottomSheetModal>
           </View>
         </View>
       </BottomSheetModalProvider>
@@ -674,3 +537,44 @@ export default function Home() {
   );
 }
 
+const styles = StyleSheet.create({
+  sessionCard: {
+    marginBottom: 3,
+    borderRadius: 20,
+    backgroundColor: '#fff',
+  },
+  rightAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flex: 1,
+    backgroundColor: '#FF3B30',
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  leftAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  actionButton: {
+    width: 100,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteButton: {
+    backgroundColor: '#FF3B30',
+  },
+  resumeButton: {
+    backgroundColor: '#6C5CE7',
+  },
+  actionText: {
+    color: 'white',
+    fontWeight: '600',
+    fontSize: 16,
+    marginTop: 4,
+  },
+});
