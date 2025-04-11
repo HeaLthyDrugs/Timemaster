@@ -1,12 +1,56 @@
 import { Link, Tabs } from 'expo-router';
-import { useColorScheme } from 'react-native';
+import { Easing, useColorScheme } from 'react-native';
+import { Animated } from 'react-native';
 
 import { HeaderButton } from '../../components/HeaderButton';
 import { TabBarIcon } from '../../components/TabBarIcon';
 
+// Custom slide animation for tab transitions
+const forSlide = ({
+  current,
+  next,
+  inverted,
+  layouts: { screen }
+}: {
+  current: { progress: Animated.AnimatedInterpolation<number> };
+  next?: { progress: Animated.AnimatedInterpolation<number> } | undefined;
+  inverted: Animated.AnimatedInterpolation<number>;
+  layouts: { screen: { width: number; height: number } };
+}) => {
+  const progress = Animated.add(
+    current.progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, 1],
+      extrapolate: 'clamp',
+    }),
+    next ? next.progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, 1],
+      extrapolate: 'clamp',
+    }) : 0
+  );
+
+  return {
+    cardStyle: {
+      transform: [
+        {
+          translateX: Animated.multiply(
+            progress.interpolate({
+              inputRange: [0, 1, 2],
+              outputRange: [screen.width, 0, -screen.width],
+              extrapolate: 'clamp',
+            }),
+            inverted
+          ),
+        },
+      ],
+    },
+  };
+};
+
 export default function TabLayout() {
   const colorScheme = useColorScheme();
-  
+
   return (
     <Tabs
       screenOptions={{
@@ -25,6 +69,10 @@ export default function TabLayout() {
         tabBarStyle: {
           backgroundColor: colorScheme === 'dark' ? '#1c1c1c' : 'white',
         },
+        animationEnabled: true,
+        cardStyleInterpolator: forSlide,
+        detachPreviousScreen: false,
+        gestureEnabled: true,
       }}>
       <Tabs.Screen
         name="index"
@@ -39,13 +87,13 @@ export default function TabLayout() {
             backgroundColor: colorScheme === 'dark' ? 'black' : 'white',
           },
           tabBarIcon: ({ color, focused }: { color: string, focused: boolean }) => (
-            <TabBarIcon 
-              type="AntDesign" 
-              name={focused ? "clockcircle" : "clockcircleo"} 
-              color={color} 
+            <TabBarIcon
+              type="AntDesign"
+              name={focused ? "clockcircle" : "clockcircleo"}
+              color={color}
             />
           ),
-          headerRight: () => (  
+          headerRight: () => (
             <Link href="/modal" asChild>
               <HeaderButton />
             </Link>
@@ -65,10 +113,10 @@ export default function TabLayout() {
             backgroundColor: colorScheme === 'dark' ? 'black' : 'white',
           },
           tabBarIcon: ({ color, focused }: { color: string, focused: boolean }) => (
-            <TabBarIcon 
-              type='Ionicons' 
-              name={focused ? "pie-chart" : "pie-chart-outline"} 
-              color={color} 
+            <TabBarIcon
+              type='Ionicons'
+              name={focused ? "pie-chart" : "pie-chart-outline"}
+              color={color}
             />
           ),
         }}

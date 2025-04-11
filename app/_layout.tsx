@@ -15,6 +15,7 @@ import { cn } from '~/lib/cn';
 import { useColorScheme, useInitialAndroidBarSync } from '~/lib/useColorScheme';
 import { NAV_THEME } from '~/theme';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
+import { NetworkProvider } from '../contexts/NetworkContext';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -61,23 +62,25 @@ export default function RootLayout() {
         style={isDarkColorScheme ? 'light' : 'dark'}
       />
       
-      <AuthProvider>
-        <GestureHandlerRootView style={{ flex: 1 }}>
-          <BottomSheetModalProvider>
-            <ActionSheetProvider>
-              <NavThemeProvider value={NAV_THEME[colorScheme]}>
-                <AuthGuard>
-                  <Stack screenOptions={SCREEN_OPTIONS}>
-                    <Stack.Screen name="(tabs)" options={TABS_OPTIONS} />
-                    <Stack.Screen name="login" options={LOGIN_OPTIONS} />
-                    <Stack.Screen name="modal" options={MODAL_OPTIONS} />
-                  </Stack>
-                </AuthGuard>
-              </NavThemeProvider>
-            </ActionSheetProvider>
-          </BottomSheetModalProvider>
-        </GestureHandlerRootView>
-      </AuthProvider>
+      <NetworkProvider>
+        <AuthProvider>
+          <GestureHandlerRootView style={{ flex: 1 }}>
+            <BottomSheetModalProvider>
+              <ActionSheetProvider>
+                <NavThemeProvider value={NAV_THEME[colorScheme]}>
+                  <AuthGuard>
+                    <Stack screenOptions={SCREEN_OPTIONS}>
+                      <Stack.Screen name="(tabs)" options={TABS_OPTIONS} />
+                      <Stack.Screen name="login" options={LOGIN_OPTIONS} />
+                      <Stack.Screen name="modal" options={MODAL_OPTIONS} />
+                    </Stack>
+                  </AuthGuard>
+                </NavThemeProvider>
+              </ActionSheetProvider>
+            </BottomSheetModalProvider>
+          </GestureHandlerRootView>
+        </AuthProvider>
+      </NetworkProvider>
     </>
   );
 }

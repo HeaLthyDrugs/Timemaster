@@ -1,24 +1,32 @@
 import { Stack } from 'expo-router';
 import { useColorScheme } from 'nativewind';
-import { StyleSheet, Text, View, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, ActivityIndicator, TouchableOpacity, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSessionManager } from '~/hooks/useSessionManager';
 import { ScreenContent } from '~/components/ScreenContent';
 import { TrackingCard } from '~/components/TrackingCard';
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { TimeSession } from '~/types/timeSession';
 import { useAuth } from '~/contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
+import { pullRemoteSessions, syncAllPendingSessions } from '~/services/firestore-sync';
+import { useIsFocused } from '@react-navigation/native';
+import { InteractionManager } from 'react-native';
 
 export default function Analysis() {
   const insets = useSafeAreaInsets();
   const { colorScheme } = useColorScheme();
   const { user } = useAuth();
-  const { sessions, isLoading } = useSessionManager();
+  const { sessions, isLoading, syncWithServer, isSyncing } = useSessionManager();
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [localSessions, setLocalSessions] = useState<TimeSession[]>([]);
-  const [isLocalLoading, setIsLocalLoading] = useState(true);
+  const [combinedSessions, setCombinedSessions] = useState<TimeSession[]>([]);
+  const [isLocalLoading, setIsLocalLoading] = useState(false); // Don't show initial loading
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [isManualSync, setIsManualSync] = useState(false);
+  const [showSyncIndicator, setShowSyncIndicator] = useState(false);
+  const isFocused = useIsFocused();
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   // Categorized durations in milliseconds
   const [categorized, setCategorized] = useState({
@@ -36,37 +44,134 @@ export default function Analysis() {
     return () => clearInterval(timer);
   }, []);
   
-  // Load local sessions in case Firebase connection fails
-  useEffect(() => {
-    const fetchLocalSessions = async () => {
-      if (!user) return;
-      
-      try {
-        setIsLocalLoading(true);
-        const storageKey = `time_sessions_${user.uid}`;
-        const storedSessions = await AsyncStorage.getItem(storageKey);
-        
-        if (storedSessions) {
-          const parsedSessions = JSON.parse(storedSessions) as TimeSession[];
-          const sessionsWithDates = parsedSessions.map((session) => ({
-            ...session,
-            startTime: new Date(session.startTime),
-            endTime: session.endTime ? new Date(session.endTime) : undefined
-          }));
-          setLocalSessions(sessionsWithDates);
-        }
-      } catch (error) {
-        console.error('Failed to load local sessions:', error);
-      } finally {
-        setIsLocalLoading(false);
-      }
-    };
+  // Load local sessions without showing loading indicators
+  const loadLocalSessions = useCallback(async () => {
+    if (!user) return [];
     
-    fetchLocalSessions();
+    try {
+      const storageKey = `time_sessions_${user.uid}`;
+      const storedSessions = await AsyncStorage.getItem(storageKey);
+      
+      if (storedSessions) {
+        const parsedSessions = JSON.parse(storedSessions) as TimeSession[];
+        const sessionsWithDates = parsedSessions.map((session) => ({
+          ...session,
+          startTime: new Date(session.startTime),
+          endTime: session.endTime ? new Date(session.endTime) : undefined,
+          updatedAt: session.updatedAt ? new Date(session.updatedAt) : undefined,
+          syncedAt: session.syncedAt ? new Date(session.syncedAt) : undefined
+        }));
+        
+        // Filter out deleted sessions
+        const filteredSessions = sessionsWithDates.filter(session => !session.deleted);
+        return filteredSessions;
+      }
+      return [];
+    } catch (error) {
+      console.error('Failed to load local sessions:', error);
+      return [];
+    }
   }, [user]);
   
+  // Combine sessions from session manager and local storage
+  const updateSessions = useCallback(async (showLoading = false) => {
+    if (showLoading) {
+      setIsLocalLoading(true);
+    }
+    
+    try {
+      const localSessions = await loadLocalSessions();
+      
+      // Combine sessions, preferring Firebase sessions if available
+      if (sessions.length > 0) {
+        setCombinedSessions(sessions);
+      } else if (localSessions.length > 0) {
+        setCombinedSessions(localSessions);
+      } else {
+        setCombinedSessions([]);
+      }
+      
+      setLastUpdated(new Date());
+    } finally {
+      if (showLoading) {
+        // Delay hiding the loading indicator slightly to prevent flicker
+        setTimeout(() => {
+          setIsLocalLoading(false);
+        }, 300);
+      }
+    }
+  }, [sessions, loadLocalSessions]);
+  
+  // Sync with Firebase in the background without UI disruption
+  const syncWithFirebaseBackground = useCallback(async () => {
+    if (!user) return;
+    
+    try {
+      // Show sync indicator only if it takes longer than 500ms
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+      }
+      
+      syncTimeoutRef.current = setTimeout(() => {
+        setShowSyncIndicator(true);
+      }, 500);
+      
+      // Run sync operations
+      await InteractionManager.runAfterInteractions(async () => {
+        // First pull remote sessions
+        await pullRemoteSessions(user.uid);
+        
+        // Then sync pending sessions
+        await syncAllPendingSessions(user.uid);
+        
+        // Update the combined sessions without loading indicator
+        await updateSessions(false);
+      });
+    } catch (error) {
+      console.error('Failed to sync with Firebase:', error);
+    } finally {
+      if (syncTimeoutRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = null;
+      }
+      setShowSyncIndicator(false);
+    }
+  }, [user, updateSessions]);
+  
+  // Handle manual sync with loading indicator
+  const handleManualSync = useCallback(async () => {
+    if (!user || isManualSync) return;
+    
+    try {
+      setIsManualSync(true);
+      
+      if (syncWithServer) {
+        await syncWithServer();
+      } else {
+        await syncWithFirebaseBackground();
+      }
+      
+      // Update sessions after sync
+      await updateSessions(false);
+    } finally {
+      setIsManualSync(false);
+    }
+  }, [user, isManualSync, syncWithServer, syncWithFirebaseBackground, updateSessions]);
+  
+  // Initial load and update when sessions change
+  useEffect(() => {
+    updateSessions(false);
+  }, [updateSessions, sessions]);
+  
+  // Background sync when the screen comes into focus
+  useEffect(() => {
+    if (isFocused && user) {
+      syncWithFirebaseBackground();
+    }
+  }, [isFocused, user, syncWithFirebaseBackground]);
+  
   // Format milliseconds to readable time
-  const formatTime = (ms: number) => {
+  const formatTime = useCallback((ms: number) => {
     if (ms === 0) return "0m";
     
     const hours = Math.floor(ms / (1000 * 60 * 60));
@@ -77,10 +182,20 @@ export default function Analysis() {
     } else {
       return `${minutes}m`;
     }
-  };
+  }, []);
   
   // Process sessions and categorize them
   useEffect(() => {
+    // Don't recalculate if there are no sessions
+    if (combinedSessions.length === 0) {
+      setCategorized({
+        clarity: 0,
+        mind: 0,
+        body: 0
+      });
+      return;
+    }
+    
     // Get today's date at midnight for filtering
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -89,11 +204,8 @@ export default function Analysis() {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
     
-    // Use sessions from the session manager if available, otherwise use local sessions
-    const sessionData = sessions.length > 0 ? sessions : localSessions;
-    
     // Filter sessions from today only
-    const todaySessions = sessionData.filter(session => {
+    const todaySessions = combinedSessions.filter(session => {
       // Make sure we're working with date objects
       const sessionStart = session.startTime instanceof Date 
         ? session.startTime 
@@ -191,14 +303,14 @@ export default function Analysis() {
       mind: unwillingTime,
       body: healthTime
     });
-  }, [sessions, localSessions, currentTime]);
+  }, [combinedSessions, currentTime]);
   
   // Format times for display
   const formattedTimes = useMemo(() => ({
     clarity: formatTime(categorized.clarity),
     mind: formatTime(categorized.mind),
     body: formatTime(categorized.body)
-  }), [categorized]);
+  }), [categorized, formatTime]);
   
   // Pastel colors for the cards
   const cardColors = {
@@ -217,8 +329,11 @@ export default function Analysis() {
     });
   }, []);
   
-  // Show loading indicator while data is being fetched
-  if (isLoading && isLocalLoading) {
+  // Only show loading indicator during initial load
+  // We don't want to show loading during background syncs
+  const showFullScreenLoading = isLocalLoading && combinedSessions.length === 0;
+  
+  if (showFullScreenLoading) {
     return (
       <View className='flex-1 justify-center items-center bg-white dark:bg-black'>
         <ActivityIndicator size="large" color="#6C5CE7" />
@@ -234,9 +349,24 @@ export default function Analysis() {
         <Text className="text-sm text-gray-400">
           Today's Summary
         </Text>
-        <Text className="text-sm text-gray-400">
-          {formattedDate}
-        </Text>
+        <TouchableOpacity 
+          onPress={handleManualSync}
+          disabled={isManualSync || isSyncing}
+          className="flex-row items-center"
+        >
+          <Text className="text-sm text-gray-400 mr-2">
+            {formattedDate}
+          </Text>
+          {showSyncIndicator || isManualSync || isSyncing ? (
+            <ActivityIndicator size="small" color="#6C5CE7" style={{ width: 18, height: 18 }} />
+          ) : (
+            <Ionicons 
+              name="sync" 
+              size={18} 
+              color="#6C5CE7" 
+            />
+          )}
+        </TouchableOpacity>
       </View>
 
        {/* Bento Layout for Cards */}
@@ -247,7 +377,7 @@ export default function Analysis() {
               time={formattedTimes.clarity}
               description="Goal & Focus Work"
               backgroundColor={cardColors.clarity}
-              delay={100}
+              delay={Platform.OS === 'ios' ? 100 : 0}
             />
           </View>
           
@@ -258,7 +388,7 @@ export default function Analysis() {
               time={formattedTimes.mind}
               description="Unwilling & Distractions"
               backgroundColor={cardColors.mind}
-              delay={200}
+              delay={Platform.OS === 'ios' ? 200 : 0}
               className="mr-2"
             />
             
@@ -268,7 +398,7 @@ export default function Analysis() {
               time={formattedTimes.body}
               description="Health & Wellness"
               backgroundColor={cardColors.body}
-              delay={300}
+              delay={Platform.OS === 'ios' ? 300 : 0}
             />
           </View>
           

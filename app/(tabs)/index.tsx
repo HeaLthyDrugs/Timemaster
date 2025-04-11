@@ -11,6 +11,8 @@ import {
   Dimensions,
   Animated,
   Platform,
+  InteractionManager,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -32,9 +34,20 @@ export default function Home() {
   const [title, setTitle] = React.useState('');
   const [selectedSession, setSelectedSession] = React.useState<TimeSession | null>(null);
   const [currentTime, setCurrentTime] = React.useState(new Date());
-
+  const [debugMode, setDebugMode] = React.useState(false);
+  
+  // Animation states
+  const fadeAnim = React.useRef(new Animated.Value(1)).current;
+  const sessionItemFadeAnims = React.useRef<{[key: string]: Animated.Value}>({});
+  
+  // Animation value for highlighting a newly activated session
+  const highlightAnim = React.useRef(new Animated.Value(0)).current;
+  
   // Refs for swipeable items to properly close them
   const swipeableRefs = React.useRef<{ [key: string]: Swipeable | null }>({});
+
+  // FlatList reference for scrolling
+  const flatListRef = React.useRef<FlatList>(null);
 
   const {
     sessions,
@@ -45,6 +58,8 @@ export default function Home() {
     resumeSession,
     deleteSession,
     updateSession,
+    syncWithServer,
+    isSyncing,
   } = useSessionManager();
 
   // Bottom sheet references
@@ -53,14 +68,28 @@ export default function Home() {
 
   const categories = ["Goal", "Health", "Unwilling"];
 
-  // Update timer every second
+  // Initialize animation values for each session
+  React.useEffect(() => {
+    sessions.forEach(session => {
+      if (!sessionItemFadeAnims.current[session.id]) {
+        sessionItemFadeAnims.current[session.id] = new Animated.Value(1);
+      }
+    });
+  }, [sessions]);
+
+  // Update timer every second with optimized performance
   React.useEffect(() => {
     const timer = setInterval(() => {
-      setCurrentTime(new Date());
+      // Only update if there's an active session
+      if (activeSession) {
+        requestAnimationFrame(() => {
+          setCurrentTime(new Date());
+        });
+      }
     }, 1000);
     
     return () => clearInterval(timer);
-  }, []);
+  }, [activeSession]);
 
   const handleOpenBottomSheet = (session: TimeSession) => {
     // Close any open swipeables first
@@ -88,19 +117,112 @@ export default function Home() {
     []
   );
 
-  const startSession = async () => {
+  const handleStartSession = async () => {
     if (!category || subCategory.trim() === '' || title.trim() === '') {
       return;
     }
-
+    
+    // Reset highlight animation for new session
+    highlightAnim.setValue(0);
+    
+    // Create the session immediately
     await startNewSession({
       category,
       subCategory,
       title,
     });
-
+    
     resetForm();
     setCreateModalVisible(false);
+    
+    // Scroll to top with animation when the new session appears
+    if (flatListRef.current) {
+      flatListRef.current.scrollToOffset({ 
+        offset: 0,
+        animated: true 
+      });
+    }
+    
+    // Start highlight animation sequence after scroll completes
+    setTimeout(() => {
+      Animated.sequence([
+        // Pulse highlight effect
+        Animated.timing(highlightAnim, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: false,
+        }),
+        // Fade out highlight
+        Animated.timing(highlightAnim, {
+          toValue: 0,
+          duration: 600,
+          useNativeDriver: false,
+        }),
+      ]).start();
+    }, 300);
+  };
+
+  const handleStopSession = async () => {
+    if (!activeSession) return;
+    
+    const sessionId = activeSession.id;
+    
+    // Stop session immediately
+    await stopSession();
+    
+    // Close any open swipeables
+    Object.values(swipeableRefs.current).forEach(ref => ref?.close());
+  };
+
+  const handleResumeSession = async (sessionId: string) => {
+    const sessionToResume = sessions.find(s => s.id === sessionId);
+    if (!sessionToResume) return;
+    
+    // Reset highlight animation value
+    highlightAnim.setValue(0);
+    
+    // Resume session immediately
+    await resumeSession(sessionId);
+    
+    // Find the index of this session (it should be at the top after resuming)
+    const sessionIndex = sessions.findIndex(s => s.id === sessionId);
+    
+    // Scroll to top to show the now-active session
+    if (flatListRef.current && sessionIndex >= 0) {
+      flatListRef.current.scrollToOffset({ 
+        offset: 0,
+        animated: true 
+      });
+    }
+    
+    // Create highlight animation
+    setTimeout(() => {
+      Animated.sequence([
+        // Highlight effect
+        Animated.timing(highlightAnim, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: false, // We need to animate backgroundColor
+        }),
+        // Fade out the highlight
+        Animated.timing(highlightAnim, {
+          toValue: 0,
+          duration: 600,
+          useNativeDriver: false,
+        }),
+      ]).start();
+    }, 300);
+    
+    // Close any open swipeables
+    Object.values(swipeableRefs.current).forEach(ref => ref?.close());
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    // Delete without animation delay
+    await deleteSession(sessionId);
+    
+    // Close any open swipeables
+    Object.values(swipeableRefs.current).forEach(ref => ref?.close());
   };
 
   const saveWithoutStarting = async () => {
@@ -120,7 +242,7 @@ export default function Home() {
       elapsedTime: 0, // Initialize with zero elapsed time
     };
 
-    // This will now add the session to the list
+    // Add the session to the list immediately
     await updateSession(newSession);
     
     resetForm();
@@ -140,13 +262,6 @@ export default function Home() {
       handleCloseBottomSheet();
     }
   }, [selectedSession, category, subCategory, title, updateSession]);
-
-  const handleDeleteSession = React.useCallback(async () => {
-    if (selectedSession) {
-      await deleteSession(selectedSession.id);
-      handleCloseBottomSheet();
-    }
-  }, [selectedSession, deleteSession]);
 
   const resetForm = () => {
     setCategory(null);
@@ -234,27 +349,40 @@ export default function Home() {
       extrapolate: 'clamp',
     });
 
+    const scale = dragX.interpolate({
+      inputRange: [0, 50, 100],
+      outputRange: [0.8, 1, 1],
+      extrapolate: 'clamp',
+    });
+
     // If session is active, show stop button; otherwise show resume button
     const iconName = session.isActive ? "pause" : "play";
     const actionText = session.isActive ? "Stop" : "Resume";
     const bgColor = session.isActive ? "#FF9500" : "#6C5CE7";
     
     return (
-      <Animated.View style={[styles.leftAction, { opacity, transform: [{ translateX: trans }], backgroundColor: bgColor }]}>
+      <Animated.View style={[
+        styles.leftAction, 
+        { 
+          opacity, 
+          transform: [{ translateX: trans }, { scale }], 
+          backgroundColor: bgColor 
+        }
+      ]}>
         <TouchableOpacity
           style={styles.actionButton}
           onPress={() => {
             if (session.isActive) {
-              stopSession();
+              handleStopSession();
             } else {
-              resumeSession(session.id);
+              handleResumeSession(session.id);
             }
-            // Close the swipeable after action
-            swipeableRefs.current[session.id]?.close();
           }}
         >
-          <Ionicons name={iconName} size={28} color="white" />
-          <Text style={styles.actionText}>{actionText}</Text>
+          <Animated.View>
+            <Ionicons name={iconName} size={28} color="white" />
+            <Text style={styles.actionText}>{actionText}</Text>
+          </Animated.View>
         </TouchableOpacity>
       </Animated.View>
     );
@@ -273,106 +401,169 @@ export default function Home() {
       outputRange: [1, 1, 0],
       extrapolate: 'clamp',
     });
+
+    const scale = dragX.interpolate({
+      inputRange: [-100, -50, 0],
+      outputRange: [1, 1, 0.8],
+      extrapolate: 'clamp',
+    });
     
     return (
-      <Animated.View style={[styles.rightAction, { opacity, transform: [{ translateX: trans }] }]}>
+      <Animated.View style={[
+        styles.rightAction, 
+        { 
+          opacity, 
+          transform: [{ translateX: trans }, { scale }] 
+        }
+      ]}>
         <TouchableOpacity
           style={[styles.actionButton, styles.deleteButton]}
-          onPress={() => {
-            deleteSession(session.id);
-            // Close the swipeable after action
-            swipeableRefs.current[session.id]?.close();
-          }}
+          onPress={() => handleDeleteSession(session.id)}
         >
-          <Ionicons name="trash-outline" size={28} color="white" />
-          <Text style={styles.actionText}>Delete</Text>
+          <Animated.View>
+            <Ionicons name="trash-outline" size={28} color="white" />
+            <Text style={styles.actionText}>Delete</Text>
+          </Animated.View>
         </TouchableOpacity>
       </Animated.View>
     );
   };
 
-  const renderSessionItem = React.useCallback(({ item }: { item: TimeSession }) => (
-    <Swipeable
-      ref={ref => swipeableRefs.current[item.id] = ref}
-      renderLeftActions={(progress, dragX) => renderLeftActions(item, progress, dragX)}
-      renderRightActions={(progress, dragX) => renderRightActions(item, progress, dragX)}
-      friction={2}
-      leftThreshold={80}
-      rightThreshold={80}
-      overshootLeft={false}
-      overshootRight={false}
-    >
-      <Animated.View 
-        style={styles.sessionCard}
+  const renderSessionItem = React.useCallback(({ item }: { item: TimeSession }) => {
+    // Create animation value for this item if it doesn't exist
+    if (!sessionItemFadeAnims.current[item.id]) {
+      sessionItemFadeAnims.current[item.id] = new Animated.Value(1);
+    }
+    
+    const itemFadeAnim = sessionItemFadeAnims.current[item.id];
+    
+    // Calculate the highlight background color for active sessions
+    const highlightBackground = item.isActive ? 
+      highlightAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ['rgba(108, 92, 231, 0)', 'rgba(108, 92, 231, 0.15)']
+      }) : 'transparent';
+    
+    return (
+      <Swipeable
+        ref={ref => swipeableRefs.current[item.id] = ref}
+        renderLeftActions={(progress, dragX) => renderLeftActions(item, progress, dragX)}
+        renderRightActions={(progress, dragX) => renderRightActions(item, progress, dragX)}
+        friction={2}
+        leftThreshold={80}
+        rightThreshold={80}
+        overshootLeft={false}
+        overshootRight={false}
       >
-        <TouchableOpacity 
-          onPress={() => {
-            handleOpenBottomSheet(item);
-            prepareEditSession(item);
-          }}
-          className={`p-4 rounded-3xl border border-gray-200 dark:border-gray-700 ${
-            item.isActive 
-              ? 'bg-white dark:bg-gray-800' 
-              : 'bg-white dark:bg-gray-800'
-          }`}
+        <Animated.View 
+          style={[
+            item.isActive ? styles.activeSessionCard : styles.sessionCard,
+            {
+              opacity: itemFadeAnim,
+              transform: [{
+                scale: itemFadeAnim.interpolate({
+                  inputRange: [0.6, 1],
+                  outputRange: [0.98, 1]
+                })
+              }],
+              backgroundColor: item.isActive ? highlightBackground : 'white'
+            }
+          ]}
         >
-          {item.isActive ? (
-            // Active session UI
-            <View className='flex-row items-center'>
-              <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
-                <Ionicons name="desktop-outline" size={20} color="white" />
+          <TouchableOpacity 
+            onPress={() => {
+              handleOpenBottomSheet(item);
+              prepareEditSession(item);
+            }}
+            className={`p-4 rounded-3xl border border-gray-200 dark:border-gray-700 ${
+              item.isActive 
+                ? 'bg-white dark:bg-gray-800' 
+                : 'bg-white dark:bg-gray-800'
+            }`}
+          >
+            {item.isActive ? (
+              // Active session UI
+              <View className='flex-row items-center'>
+                <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
+                  <Ionicons name="desktop-outline" size={20} color="white" />
+                </View>
+                <View className='flex-1'>
+                  <Text className='text-lg font-bold text-gray-800 dark:text-gray-100'>
+                    {item.subCategory}
+                  </Text>
+                  <Text className='text-sm text-gray-500 dark:text-gray-300'>
+                    {item.category}
+                  </Text>
+                </View>
+                <View className='items-end'>
+                  <Text className='text-xl font-bold text-gray-900 dark:text-gray-100'>
+                    {formatTimerDisplay(item)}
+                  </Text>
+                  <TouchableOpacity 
+                    onPress={() => handleStopSession()}
+                    className='mt-1'
+                  >
+                    <Ionicons name="pause" size={24} color="#6C5CE7" />
+                  </TouchableOpacity>
+                </View>
               </View>
-              <View className='flex-1'>
-                <Text className='text-lg font-bold text-gray-800 dark:text-gray-100'>
-                  {item.subCategory}
-                </Text>
-                <Text className='text-sm text-gray-500 dark:text-gray-300'>
-                  {item.category}
-                </Text>
+            ) : (
+              // Paused or saved session UI
+              <View className='flex-row items-center'>
+                <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
+                  <Ionicons name="desktop-outline" size={20} color="white" />
+                </View>
+                <View className='flex-1'>
+                  <Text className='text-sm text-gray-500 dark:text-gray-400'>
+                    {item.category}
+                  </Text>
+                  <Text className='text-base font-medium text-gray-800 dark:text-gray-100'>
+                    {item.subCategory}
+                  </Text>
+                </View>
+                <View className='items-end'>
+                  <Text className='text-sm text-gray-500 dark:text-gray-400'>
+                    {item.saved ? '' : formatTimerDisplay(item)}
+                  </Text>
+                  <TouchableOpacity 
+                    onPress={() => handleResumeSession(item.id)}
+                    className='mt-1'
+                  >
+                    <Ionicons name="play" size={24} color="#6C5CE7" />
+                  </TouchableOpacity>
+                </View>
               </View>
-              <View className='items-end'>
-                <Text className='text-xl font-bold text-gray-900 dark:text-gray-100'>
-                  {formatTimerDisplay(item)}
-                </Text>
-                <TouchableOpacity 
-                  onPress={() => stopSession()}
-                  className='mt-1'
-                >
-                  <Ionicons name="pause" size={24} color="#6C5CE7" />
-                </TouchableOpacity>
-              </View>
-            </View>
-          ) : (
-            // Paused or saved session UI
-            <View className='flex-row items-center'>
-              <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
-                <Ionicons name="desktop-outline" size={20} color="white" />
-              </View>
-              <View className='flex-1'>
-                <Text className='text-sm text-gray-500 dark:text-gray-400'>
-                  {item.category}
-                </Text>
-                <Text className='text-base font-medium text-gray-800 dark:text-gray-100'>
-                  {item.subCategory}
-                </Text>
-              </View>
-              <View className='items-end'>
-                <Text className='text-sm text-gray-500 dark:text-gray-400'>
-                  {item.saved ? '' : formatTimerDisplay(item)}
-                </Text>
-                <TouchableOpacity 
-                  onPress={() => resumeSession(item.id)}
-                  className='mt-1'
-                >
-                  <Ionicons name="play" size={24} color="#6C5CE7" />
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-        </TouchableOpacity>
-      </Animated.View>
-    </Swipeable>
-  ), [currentTime, formatTimerDisplay, handleOpenBottomSheet, prepareEditSession, renderLeftActions, renderRightActions, resumeSession, stopSession]);
+            )}
+          </TouchableOpacity>
+        </Animated.View>
+      </Swipeable>
+    );
+  }, [
+    currentTime, 
+    formatTimerDisplay, 
+    handleOpenBottomSheet, 
+    prepareEditSession, 
+    renderLeftActions, 
+    renderRightActions,
+    highlightAnim
+  ]);
+
+  // Toggle debug mode with a long press on the app header
+  const toggleDebugMode = () => {
+    setDebugMode(!debugMode);
+  };
+  
+  // Force a manual sync
+  const handleManualSync = async () => {
+    if (syncWithServer) {
+      try {
+        await syncWithServer();
+        console.log('Manual sync completed');
+      } catch (error) {
+        console.error('Manual sync failed:', error);
+      }
+    }
+  };
 
   // Display loading state
   if (isLoading) {
@@ -386,16 +577,46 @@ export default function Home() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <BottomSheetModalProvider>
-        <View className='flex-1 bg-white dark:bg-gray-900'>
+        <Animated.View 
+          className='flex-1 bg-white dark:bg-gray-900'
+          style={{ opacity: fadeAnim }}
+        >
           <View className='flex-1 p-4'>
             
-            {/* Time Card  */}
-            <View className='mb-4'>
+            {/* Time Card with Animation */}
+            <Animated.View className='mb-4'>
               <TimeCard 
                 time={activeSession ? formatTimerDisplay(activeSession) : "00:00:00"} 
                 onTimeChange={() => {}} 
               />
-            </View>
+              
+              {/* Debug Controls - Long press the time card to access */}
+              <TouchableOpacity 
+                onLongPress={toggleDebugMode}
+                delayLongPress={1000}
+                style={{ position: 'absolute', top: 0, right: 0, width: 40, height: 40 }}
+              />
+            </Animated.View>
+            
+            {debugMode && (
+              <View className='mb-4 p-3 bg-gray-100 dark:bg-gray-800 rounded-lg'>
+                <Text className='text-sm font-bold mb-2 text-gray-700 dark:text-gray-300'>Debug Tools</Text>
+                <View className='flex-row'>
+                  <TouchableOpacity
+                    onPress={handleManualSync}
+                    className='bg-blue-500 px-3 py-2 rounded-md mr-2'
+                  >
+                    <Text className='text-white text-xs'>Force Sync</Text>
+                  </TouchableOpacity>
+                  <Text className='text-xs text-gray-600 dark:text-gray-400 self-center'>
+                    {isSyncing ? 'Syncing...' : 'Idle'}
+                  </Text>
+                </View>
+                <Text className='text-xs mt-2 text-gray-500 dark:text-gray-400'>
+                  Session count: {sessions.length} • Active: {activeSession ? 'Yes' : 'No'}
+                </Text>
+              </View>
+            )}
 
             {/* Sessions List */}
             <Text className='text-md font-semibold mb-4 text-gray-400 dark:text-gray-100'>Sessions</Text>
@@ -406,12 +627,17 @@ export default function Home() {
               </View>
             ) : (
               <FlatList
+                ref={flatListRef}
                 data={sessions}
                 keyExtractor={(item) => item.id}
                 renderItem={renderSessionItem}
                 ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={{ paddingBottom: 80 }}
+                maxToRenderPerBatch={5}
+                windowSize={7}
+                removeClippedSubviews={Platform.OS === 'android'}
+                updateCellsBatchingPeriod={50}
               />
             )}
 
@@ -486,7 +712,7 @@ export default function Home() {
                   {/* Action Buttons */}
                   <View className='flex-row justify-between mb-2'>
                     <TouchableOpacity 
-                      onPress={startSession}
+                      onPress={handleStartSession}
                       disabled={!category || subCategory.trim() === '' || title.trim() === ''}
                       className={`flex-row items-center justify-center bg-purple-500 rounded-xl py-3 flex-1 mr-2 ${
                         (!category || subCategory.trim() === '' || title.trim() === '')
@@ -531,7 +757,7 @@ export default function Home() {
               </View>
             </Modal>
           </View>
-        </View>
+        </Animated.View>
       </BottomSheetModalProvider>
     </GestureHandlerRootView>
   );
@@ -542,6 +768,16 @@ const styles = StyleSheet.create({
     marginBottom: 3,
     borderRadius: 20,
     backgroundColor: '#fff',
+  },
+  activeSessionCard: {
+    marginBottom: 3,
+    borderRadius: 20,
+    backgroundColor: '#fff',
+    shadowColor: '#6C5CE7',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 5,
+    elevation: 6,
   },
   rightAction: {
     flexDirection: 'row',
