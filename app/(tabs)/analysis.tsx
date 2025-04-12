@@ -31,7 +31,7 @@ export default function Analysis() {
   // Categorized durations in milliseconds
   const [categorized, setCategorized] = useState({
     clarity: 0, // Goal category
-    mind: 0,    // Unwilling category
+    lost: 0,    // Unwilling category
     body: 0     // Health category
   });
 
@@ -190,7 +190,7 @@ export default function Analysis() {
     if (combinedSessions.length === 0) {
       setCategorized({
         clarity: 0,
-        mind: 0,
+        lost: 0,
         body: 0
       });
       return;
@@ -211,9 +211,17 @@ export default function Analysis() {
         ? session.startTime 
         : new Date(session.startTime);
         
-      // For active sessions, check if they were active today
+      // For active sessions, only include if they were started today
+      // or if they were resumed today
       if (session.isActive) {
-        return true; // Include all active sessions
+        // If session was started today, include it
+        if (sessionStart >= today) {
+          return true;
+        }
+        
+        // If session was started before today but is active now,
+        // we'll include it, but later only count today's portion
+        return true;
       } 
       
       // For sessions with an end time
@@ -260,28 +268,40 @@ export default function Analysis() {
         ? session.endTime 
         : session.endTime ? new Date(session.endTime) : undefined;
       
-      if (session.isActive) {
-        // Active session: elapsed time + current run time
-        const elapsedTime = session.elapsedTime || 0;
-        const currentRunTime = currentTime.getTime() - startTime.getTime();
-        totalTime = elapsedTime + currentRunTime;
-      } else if (session.elapsedTime !== undefined) {
-        // Use the correct elapsed time for tracked sessions
-        totalTime = session.elapsedTime;
-      } else if (endTime) {
-        // Fallback for old data format
-        const runTime = endTime.getTime() - startTime.getTime();
-        totalTime = runTime;
-      }
-      
-      // For sessions that span multiple days, only count the portion that occurred today
-      if (!session.isActive && startTime < today && endTime && endTime > today) {
-        // Calculate only the portion of time spent today
-        const todayStart = new Date(today); // Start of today
-        const todayEnd = endTime < tomorrow ? endTime : new Date(tomorrow); // End time or end of today
+      // For sessions that span multiple days or were resumed today,
+      // we need special handling to only count today's portion
+      if (startTime < today) {
+        // Session started before today
         
-        // Recalculate time only for today's portion
-        totalTime = todayEnd.getTime() - todayStart.getTime();
+        if (session.isActive) {
+          // Active session that started before today:
+          // Only count the time elapsed today
+          const todayStart = new Date(today);
+          const currentRunTime = currentTime.getTime() - todayStart.getTime();
+          totalTime = currentRunTime;
+        } else if (endTime && endTime >= today) {
+          // Completed session that spans days and ended today:
+          // Only count the portion that occurred today
+          const todayStart = new Date(today);
+          const sessionEnd = endTime < tomorrow ? endTime : new Date(tomorrow);
+          totalTime = sessionEnd.getTime() - todayStart.getTime();
+        }
+      } else {
+        // Session started today
+        if (session.isActive) {
+          // Active session that started today:
+          // Count the elapsed time + current run time
+          const elapsedTime = session.elapsedTime || 0;
+          const currentRunTime = currentTime.getTime() - startTime.getTime();
+          totalTime = elapsedTime + currentRunTime;
+        } else if (session.elapsedTime !== undefined) {
+          // Completed session with elapsed time recorded
+          totalTime = session.elapsedTime;
+        } else if (endTime) {
+          // Fallback for old data format
+          const runTime = endTime.getTime() - startTime.getTime();
+          totalTime = runTime;
+        }
       }
       
       // Categorize based on session category
@@ -289,7 +309,7 @@ export default function Analysis() {
         case 'Goal':
           goalTime += totalTime;
           break;
-        case 'Unwilling':
+        case 'Lost':
           unwillingTime += totalTime;
           break;
         case 'Health':
@@ -300,7 +320,7 @@ export default function Analysis() {
     
     setCategorized({
       clarity: goalTime,
-      mind: unwillingTime,
+      lost: unwillingTime,
       body: healthTime
     });
   }, [combinedSessions, currentTime]);
@@ -308,14 +328,14 @@ export default function Analysis() {
   // Format times for display
   const formattedTimes = useMemo(() => ({
     clarity: formatTime(categorized.clarity),
-    mind: formatTime(categorized.mind),
+    lost: formatTime(categorized.lost),
     body: formatTime(categorized.body)
   }), [categorized, formatTime]);
   
   // Pastel colors for the cards
   const cardColors = {
     clarity: colorScheme === 'dark' ? 'rgba(160, 210, 255, 0.15)' : 'rgba(160, 210, 255, 0.3)',
-    mind: colorScheme === 'dark' ? 'rgba(255, 191, 200, 0.15)' : 'rgba(255, 191, 200, 0.3)',
+    lost: colorScheme === 'dark' ? 'rgba(255, 191, 200, 0.15)' : 'rgba(255, 191, 200, 0.3)',
     body: colorScheme === 'dark' ? 'rgba(187, 255, 204, 0.15)' : 'rgba(187, 255, 204, 0.3)',
   };
   
@@ -382,12 +402,12 @@ export default function Analysis() {
           </View>
           
           <View className="flex-row">
-            {/* Mind Card (Unwilling) */}
+            {/* Lost Card (Unwilling) */}
             <TrackingCard
-              title="Mind"
-              time={formattedTimes.mind}
-              description="Unwilling & Distractions"
-              backgroundColor={cardColors.mind}
+              title="Lost"
+              time={formattedTimes.lost}
+              description="Distractions & Unwilling Time"
+              backgroundColor={cardColors.lost}
               delay={Platform.OS === 'ios' ? 200 : 0}
               className="mr-2"
             />
@@ -403,9 +423,9 @@ export default function Analysis() {
           </View>
           
           {/* Empty state when no data for today */}
-          {(categorized.clarity === 0 && categorized.mind === 0 && categorized.body === 0) && (
+          {(categorized.clarity === 0 && categorized.lost === 0 && categorized.body === 0) && (
             <View className="mt-8 items-center">
-              <Ionicons name="calendar-outline" size={48} color="#6C5CE7" />
+              <Ionicons name="analytics-outline" size={48} color="#6C5CE7" />
               <Text className="text-center mt-4 text-gray-600 dark:text-gray-400">
                 No time tracked today yet.
               </Text>

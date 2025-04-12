@@ -23,11 +23,15 @@ import { useSessionManager } from '~/hooks/useSessionManager';
 import { useRouter } from 'expo-router';
 import { Swipeable, RectButton } from 'react-native-gesture-handler';
 import { TimeSession } from '~/types/timeSession';
+import { useColorScheme } from 'nativewind';
+import { FontAwesome5 } from '@expo/vector-icons';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function Home() {
   const router = useRouter();
+  const { colorScheme } = useColorScheme();
+  const isDark = colorScheme === 'dark';
   const [createModalVisible, setCreateModalVisible] = React.useState(false);
   const [category, setCategory] = React.useState<string | null>(null);
   const [subCategory, setSubCategory] = React.useState('');
@@ -35,6 +39,8 @@ export default function Home() {
   const [selectedSession, setSelectedSession] = React.useState<TimeSession | null>(null);
   const [currentTime, setCurrentTime] = React.useState(new Date());
   const [debugMode, setDebugMode] = React.useState(false);
+  // Bottom sheet mode: 'session-edit' or 'timer-view'
+  const [bottomSheetMode, setBottomSheetMode] = React.useState<'session-edit' | 'timer-view'>('session-edit');
   
   // Animation states
   const fadeAnim = React.useRef(new Animated.Value(1)).current;
@@ -42,6 +48,9 @@ export default function Home() {
   
   // Animation value for highlighting a newly activated session
   const highlightAnim = React.useRef(new Animated.Value(0)).current;
+  
+  // Pulsing animation for the timer view
+  const pulseAnim = React.useRef(new Animated.Value(1)).current;
   
   // Refs for swipeable items to properly close them
   const swipeableRefs = React.useRef<{ [key: string]: Swipeable | null }>({});
@@ -66,7 +75,7 @@ export default function Home() {
   const bottomSheetModalRef = React.useRef<BottomSheetModal>(null);
   const snapPoints = React.useMemo(() => ['65%', '75%'], []);
 
-  const categories = ["Goal", "Health", "Unwilling"];
+  const categories = ["Goal", "Health", "Lost"];
 
   // Initialize animation values for each session
   React.useEffect(() => {
@@ -80,8 +89,8 @@ export default function Home() {
   // Update timer every second with optimized performance
   React.useEffect(() => {
     const timer = setInterval(() => {
-      // Only update if there's an active session
-      if (activeSession) {
+      // Update if there's an active session or if we're viewing the timer
+      if (activeSession || (bottomSheetMode === 'timer-view' && selectedSession?.isActive)) {
         requestAnimationFrame(() => {
           setCurrentTime(new Date());
         });
@@ -89,13 +98,51 @@ export default function Home() {
     }, 1000);
     
     return () => clearInterval(timer);
-  }, [activeSession]);
+  }, [activeSession, bottomSheetMode, selectedSession]);
+
+  React.useEffect(() => {
+    // Start pulsing animation if we're in timer view and the session is active
+    if (bottomSheetMode === 'timer-view' && selectedSession?.isActive) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.08,
+            duration: 800,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 800,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      // Reset animation when not in timer view
+      pulseAnim.setValue(1);
+    }
+  }, [bottomSheetMode, selectedSession, pulseAnim]);
 
   const handleOpenBottomSheet = (session: TimeSession) => {
     // Close any open swipeables first
     Object.values(swipeableRefs.current).forEach(ref => ref?.close());
     
     setSelectedSession(session);
+    setBottomSheetMode('session-edit');
+    
+    // Set form values for editing
+    setCategory(session.category);
+    setSubCategory(session.subCategory);
+    setTitle(session.title);
+    
+    bottomSheetModalRef.current?.present();
+  };
+
+  const handleOpenTimerView = () => {
+    if (!activeSession) return;
+    
+    setSelectedSession(activeSession);
+    setBottomSheetMode('timer-view');
     bottomSheetModalRef.current?.present();
   };
 
@@ -358,7 +405,13 @@ export default function Home() {
     // If session is active, show stop button; otherwise show resume button
     const iconName = session.isActive ? "pause" : "play";
     const actionText = session.isActive ? "Stop" : "Resume";
-    const bgColor = session.isActive ? "#FF9500" : "#6C5CE7";
+    
+    // Get color based on category
+    const categoryStyle = getCategoryColor(session.category);
+    // Use more pastel-like colors for the action buttons
+    const bgColor = session.isActive ? 
+      isDark ? 'rgba(255, 149, 0, 0.8)' : 'rgba(255, 149, 0, 0.7)' : 
+      categoryStyle.bg;
     
     return (
       <Animated.View style={[
@@ -380,8 +433,8 @@ export default function Home() {
           }}
         >
           <Animated.View>
-            <Ionicons name={iconName} size={28} color="white" />
-            <Text style={styles.actionText}>{actionText}</Text>
+            <Ionicons name={iconName} size={28} color={categoryStyle.text} />
+            <Text style={[styles.actionText, { color: categoryStyle.text }]}>{actionText}</Text>
           </Animated.View>
         </TouchableOpacity>
       </Animated.View>
@@ -429,6 +482,52 @@ export default function Home() {
     );
   };
 
+  // Theme colors based on category
+  const getCategoryColor = (category: string) => {
+    switch (category) {
+      case 'Goal':
+        return {
+          bg: isDark ? 'rgba(160, 210, 255, 0.15)' : 'rgba(160, 210, 255, 0.3)',
+          text: isDark ? '#A0D2FF' : '#1E3A8A',
+          icon: 'brain'
+        };
+      case 'Lost':
+        return {
+          bg: isDark ? 'rgba(255, 191, 200, 0.15)' : 'rgba(255, 191, 200, 0.3)',
+          text: isDark ? '#FFBFC8' : '#9D174D',
+          icon: 'hourglass-half'
+        };
+      case 'Health':
+        return {
+          bg: isDark ? 'rgba(187, 255, 204, 0.15)' : 'rgba(187, 255, 204, 0.3)',
+          text: isDark ? '#BBFFCC' : '#065F46',
+          icon: 'running'
+        };
+      // Legacy category name support
+      case 'Unwilling':
+        return {
+          bg: isDark ? 'rgba(255, 191, 200, 0.15)' : 'rgba(255, 191, 200, 0.3)',
+          text: isDark ? '#FFBFC8' : '#9D174D',
+          icon: 'hourglass-half'
+        };
+      default:
+        return {
+          bg: isDark ? 'rgba(160, 210, 255, 0.15)' : 'rgba(160, 210, 255, 0.3)',
+          text: isDark ? '#A0D2FF' : '#1E3A8A',
+          icon: 'clock'
+        };
+    }
+  };
+
+  // Get the card background color for the TimeCard based on active session
+  const getTimeCardBackground = () => {
+    if (!activeSession) return 'bg-white dark:bg-gray-800';
+    
+    const { bg } = getCategoryColor(activeSession.category);
+    return bg;
+  };
+
+  // In renderSessionItem function, replace the card UI
   const renderSessionItem = React.useCallback(({ item }: { item: TimeSession }) => {
     // Create animation value for this item if it doesn't exist
     if (!sessionItemFadeAnims.current[item.id]) {
@@ -437,11 +536,14 @@ export default function Home() {
     
     const itemFadeAnim = sessionItemFadeAnims.current[item.id];
     
+    // Get category styling
+    const categoryStyle = getCategoryColor(item.category);
+    
     // Calculate the highlight background color for active sessions
     const highlightBackground = item.isActive ? 
       highlightAnim.interpolate({
         inputRange: [0, 1],
-        outputRange: ['rgba(108, 92, 231, 0)', 'rgba(108, 92, 231, 0.15)']
+        outputRange: ['rgba(108, 92, 231, 0)', categoryStyle.bg]
       }) : 'transparent';
     
     return (
@@ -475,7 +577,7 @@ export default function Home() {
               handleOpenBottomSheet(item);
               prepareEditSession(item);
             }}
-            className={`p-4 rounded-3xl border border-gray-200 dark:border-gray-700 ${
+            className={`p-4 rounded-3xl dark:border-gray-700 shadow-sm ${
               item.isActive 
                 ? 'bg-white dark:bg-gray-800' 
                 : 'bg-white dark:bg-gray-800'
@@ -484,8 +586,9 @@ export default function Home() {
             {item.isActive ? (
               // Active session UI
               <View className='flex-row items-center'>
-                <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
-                  <Ionicons name="desktop-outline" size={20} color="white" />
+                <View className='h-12 w-12 rounded-xl justify-center items-center mr-4' 
+                  style={{ backgroundColor: categoryStyle.bg }}>
+                  <FontAwesome5 name={categoryStyle.icon} size={20} color={categoryStyle.text} style={{ opacity: 0.7 }} />
                 </View>
                 <View className='flex-1'>
                   <Text className='text-lg font-bold text-gray-800 dark:text-gray-100'>
@@ -503,15 +606,16 @@ export default function Home() {
                     onPress={() => handleStopSession()}
                     className='mt-1'
                   >
-                    <Ionicons name="pause" size={24} color="#6C5CE7" />
+                    <Ionicons name="pause" size={24} color={categoryStyle.text} style={{ opacity: 0.8 }} />
                   </TouchableOpacity>
                 </View>
               </View>
             ) : (
               // Paused or saved session UI
               <View className='flex-row items-center'>
-                <View className='h-12 w-12 rounded-xl bg-purple-500 justify-center items-center mr-4'>
-                  <Ionicons name="desktop-outline" size={20} color="white" />
+                <View className='h-12 w-12 rounded-xl justify-center items-center mr-4' 
+                  style={{ backgroundColor: categoryStyle.bg }}>
+                  <FontAwesome5 name={categoryStyle.icon} size={20} color={categoryStyle.text} style={{ opacity: 0.7 }} />
                 </View>
                 <View className='flex-1'>
                   <Text className='text-sm text-gray-500 dark:text-gray-400'>
@@ -529,7 +633,7 @@ export default function Home() {
                     onPress={() => handleResumeSession(item.id)}
                     className='mt-1'
                   >
-                    <Ionicons name="play" size={24} color="#6C5CE7" />
+                    <Ionicons name="play" size={24} color={categoryStyle.text} style={{ opacity: 0.8 }} />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -545,7 +649,8 @@ export default function Home() {
     prepareEditSession, 
     renderLeftActions, 
     renderRightActions,
-    highlightAnim
+    highlightAnim,
+    isDark
   ]);
 
   // Toggle debug mode with a long press on the app header
@@ -581,13 +686,18 @@ export default function Home() {
           className='flex-1 bg-white dark:bg-gray-900'
           style={{ opacity: fadeAnim }}
         >
-          <View className='flex-1 p-4'>
+          <View className='flex-1 px-4'>
             
             {/* Time Card with Animation */}
             <Animated.View className='mb-4'>
               <TimeCard 
                 time={activeSession ? formatTimerDisplay(activeSession) : "00:00:00"} 
-                onTimeChange={() => {}} 
+                onTimeChange={() => {}}
+                projectName={activeSession?.subCategory || "No active session"}
+                onPress={activeSession ? handleOpenTimerView : undefined}
+                category={activeSession?.category}
+                backgroundColor={activeSession ? getCategoryColor(activeSession.category).bg : 'rgba(108, 92, 231, 0.15)'}
+                textColor={activeSession ? getCategoryColor(activeSession.category).text : '#6C5CE7'}
               />
               
               {/* Debug Controls - Long press the time card to access */}
@@ -757,6 +867,164 @@ export default function Home() {
               </View>
             </Modal>
           </View>
+          
+          {/* Bottom Sheet Modal */}
+          <BottomSheetModal
+            ref={bottomSheetModalRef}
+            index={0}
+            snapPoints={snapPoints}
+            backdropComponent={renderBackdrop}
+            handleIndicatorStyle={{ backgroundColor: '#9ca3af' }}
+          >
+            {bottomSheetMode === 'session-edit' && selectedSession && (
+              <View className='p-5'>
+                <Text className='text-2xl font-bold mb-6 text-center text-gray-800 dark:text-gray-100'>
+                  Edit Session
+                </Text>
+                
+                {/* Category Selection */}
+                <View className='flex-row flex-wrap mb-4'>
+                  {categories.map((cat) => (
+                    <TouchableOpacity
+                      key={cat}
+                      onPress={() => setCategory(cat)}
+                      className={`mr-2 mb-2 px-4 py-2 rounded-full ${
+                        category === cat 
+                          ? 'bg-purple-500' 
+                          : 'bg-gray-200 dark:bg-gray-700'
+                      }`}
+                    >
+                      <Text 
+                        className={`${
+                          category === cat 
+                            ? 'text-white' 
+                            : 'text-gray-800 dark:text-gray-200'
+                        }`}
+                      >
+                        {cat}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                
+                {/* Sub-category Input */}
+                <TextInput
+                  className='bg-gray-100 dark:bg-gray-700 p-3 rounded-xl mb-4 text-gray-800 dark:text-gray-100'
+                  placeholder="Label this session (e.g. Writing, Gym, Scrolling)"
+                  placeholderTextColor="#9ca3af"
+                  value={subCategory}
+                  onChangeText={setSubCategory}
+                />
+                
+                {/* Title Input */}
+                <TextInput
+                  className='bg-gray-100 dark:bg-gray-700 p-3 rounded-xl mb-6 text-gray-800 dark:text-gray-100'
+                  placeholder="Name this activity"
+                  placeholderTextColor="#9ca3af"
+                  value={title}
+                  onChangeText={setTitle}
+                />
+                
+                {/* Action Buttons */}
+                <View className='flex-row justify-between mb-2'>
+                  <TouchableOpacity 
+                    onPress={handleUpdateSession}
+                    disabled={!category || subCategory.trim() === '' || title.trim() === ''}
+                    className={`flex-row items-center justify-center bg-green-500 rounded-xl py-3 flex-1 mr-2 ${
+                      (!category || subCategory.trim() === '' || title.trim() === '')
+                        ? 'opacity-50' 
+                        : ''
+                    }`}
+                  >
+                    <Ionicons name="save-outline" size={18} color="white" style={{ marginRight: 5 }} />
+                    <Text className='text-white font-medium text-center'>
+                      Save Changes
+                    </Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    onPress={handleCloseBottomSheet}
+                    className='bg-gray-200 dark:bg-gray-700 rounded-xl py-3 flex-1 ml-2'
+                  >
+                    <Text className='text-gray-500 dark:text-gray-200 font-medium text-center'>
+                      Cancel
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+            
+            {bottomSheetMode === 'timer-view' && selectedSession && (
+              <View className='p-5 items-center'>
+                <Text className='text-2xl font-bold mb-6 text-center text-gray-800 dark:text-gray-100'>
+                  Active Session
+                </Text>
+                
+                <Animated.View 
+                  className='w-full rounded-2xl p-8 mb-6 items-center'
+                  style={[
+                    {
+                      backgroundColor: getCategoryColor(selectedSession.category).bg
+                    },
+                    selectedSession.isActive ? {
+                      transform: [{ scale: pulseAnim }]
+                    } : undefined
+                  ]}
+                >
+                  <Text 
+                    className='text-5xl font-bold'
+                    style={{ color: getCategoryColor(selectedSession.category).text }}
+                  >
+                    {formatTimerDisplay(selectedSession)}
+                  </Text>
+                </Animated.View>
+                
+                <View className='w-full items-center mb-4'>
+                  <Text className='text-xl font-bold text-gray-800 dark:text-gray-100'>
+                    {selectedSession.subCategory}
+                  </Text>
+                  <Text className='text-md text-gray-500 dark:text-gray-400' 
+                    style={{ color: getCategoryColor(selectedSession.category).text, opacity: 0.7 }}>
+                    {selectedSession.category}
+                  </Text>
+                </View>
+                
+                <View className='flex-row justify-center w-full mt-4'>
+                  <TouchableOpacity 
+                    onPress={handleStopSession}
+                    className='rounded-full p-5 mr-5'
+                    style={{ 
+                      backgroundColor: getCategoryColor(selectedSession.category).bg,
+                      borderWidth: 1.5,
+                      borderColor: isDark ? 'rgba(0,0,0,0.1)' : 'rgba(0,0,0,0.05)'
+                    }}
+                  >
+                    <Ionicons 
+                      name="pause" 
+                      size={30} 
+                      color={getCategoryColor(selectedSession.category).text} 
+                      style={{ opacity: 0.8 }}
+                    />
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    onPress={handleCloseBottomSheet}
+                    className='rounded-full p-5'
+                    style={{ 
+                      backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' 
+                    }}
+                  >
+                    <Ionicons 
+                      name="close" 
+                      size={30} 
+                      color={getCategoryColor(selectedSession.category).text} 
+                      style={{ opacity: 0.8 }} 
+                    />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </BottomSheetModal>
         </Animated.View>
       </BottomSheetModalProvider>
     </GestureHandlerRootView>
@@ -773,7 +1041,7 @@ const styles = StyleSheet.create({
     marginBottom: 3,
     borderRadius: 20,
     backgroundColor: '#fff',
-    shadowColor: '#6C5CE7',
+    shadowColor: 'rgba(108, 92, 231, 0.3)',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.5,
     shadowRadius: 5,
@@ -784,7 +1052,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
     flex: 1,
-    backgroundColor: '#FF3B30',
+    backgroundColor: 'rgba(255, 59, 48, 0.8)',
     borderRadius: 20,
     overflow: 'hidden',
   },
@@ -802,10 +1070,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   deleteButton: {
-    backgroundColor: '#FF3B30',
+    backgroundColor: 'rgba(255, 59, 48, 0.8)',
   },
   resumeButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: 'rgba(108, 92, 231, 0.5)',
   },
   actionText: {
     color: 'white',

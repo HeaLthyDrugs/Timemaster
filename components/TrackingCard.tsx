@@ -33,7 +33,7 @@ export function TrackingCard({
     switch (title.toLowerCase()) {
       case 'clarity':
         return isDark ? '#A0D2FF' : '#1E3A8A';
-      case 'mind':
+      case 'lost':
         return isDark ? '#FFBFC8' : '#9D174D';
       case 'body':
         return isDark ? '#BBFFCC' : '#065F46';
@@ -47,8 +47,8 @@ export function TrackingCard({
     switch (title.toLowerCase()) {
       case 'clarity':
         return 'brain';
-      case 'mind':
-        return 'book';
+      case 'lost':
+        return 'hourglass-half';
       case 'body':
         return 'running';
       default:
