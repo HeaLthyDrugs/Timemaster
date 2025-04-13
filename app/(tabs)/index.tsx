@@ -25,6 +25,7 @@ import { Swipeable, RectButton } from 'react-native-gesture-handler';
 import { TimeSession } from '~/types/timeSession';
 import { useColorScheme } from 'nativewind';
 import { FontAwesome5 } from '@expo/vector-icons';
+import NetInfo from '@react-native-community/netinfo';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -348,7 +349,7 @@ export default function Home() {
   };
 
   const formatTimerDisplay = (session: TimeSession) => {
-    if (!session) return "00:00:00";
+    if (!session) return "0s";
     
     if (session.isActive) {
       // Active session - show elapsed time plus current running time
@@ -361,7 +362,17 @@ export default function Home() {
       const minutes = Math.floor((totalSeconds % 3600) / 60);
       const seconds = totalSeconds % 60;
       
-      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+      // Build the time string with only necessary parts
+      let formattedTime = '';
+      if (hours > 0) {
+        formattedTime += `${hours}h `;
+      }
+      if (minutes > 0 || hours > 0) {
+        formattedTime += `${minutes}m `;
+      }
+      formattedTime += `${seconds}s`;
+      
+      return formattedTime;
     } else if (session.elapsedTime !== undefined) {
       // Completed or paused session - show just the elapsed time
       const elapsedMs = session.elapsedTime;
@@ -371,11 +382,21 @@ export default function Home() {
       const minutes = Math.floor((totalSeconds % 3600) / 60);
       const seconds = totalSeconds % 60;
       
-      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+      // Build the time string with only necessary parts
+      let formattedTime = '';
+      if (hours > 0) {
+        formattedTime += `${hours}h `;
+      }
+      if (minutes > 0 || hours > 0) {
+        formattedTime += `${minutes}m `;
+      }
+      formattedTime += `${seconds}s`;
+      
+      return formattedTime;
     }
     
     // Saved but never started session
-    return "00:00:00";
+    return "0s";
   };
 
   const formatTime = (date: Date) => {
@@ -558,29 +579,16 @@ export default function Home() {
         overshootRight={false}
       >
         <Animated.View 
-          style={[
-            item.isActive ? styles.activeSessionCard : styles.sessionCard,
-            {
-              opacity: itemFadeAnim,
-              transform: [{
-                scale: itemFadeAnim.interpolate({
-                  inputRange: [0.6, 1],
-                  outputRange: [0.98, 1]
-                })
-              }],
-              backgroundColor: item.isActive ? highlightBackground : 'white'
-            }
-          ]}
         >
           <TouchableOpacity 
             onPress={() => {
               handleOpenBottomSheet(item);
               prepareEditSession(item);
             }}
-            className={`p-4 rounded-3xl dark:border-gray-700 shadow-sm ${
+            className={`p-4 rounded-3xl ${
               item.isActive 
                 ? 'bg-white dark:bg-gray-800' 
-                : 'bg-white dark:bg-gray-800'
+                : 'bg-white dark:bg-gray-900'
             }`}
           >
             {item.isActive ? (
@@ -594,9 +602,15 @@ export default function Home() {
                   <Text className='text-lg font-bold text-gray-800 dark:text-gray-100'>
                     {item.subCategory}
                   </Text>
-                  <Text className='text-sm text-gray-500 dark:text-gray-300'>
-                    {item.category}
-                  </Text>
+                  <View className='flex-row flex-wrap'>
+                    <View 
+                      style={{ backgroundColor: categoryStyle.bg, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 4 }}
+                    >
+                      <Text style={{ color: categoryStyle.text, fontSize: 12, fontWeight: '500' }}>
+                        {item.title}
+                      </Text>
+                    </View>
+                  </View>
                 </View>
                 <View className='items-end'>
                   <Text className='text-xl font-bold text-gray-900 dark:text-gray-100'>
@@ -618,12 +632,18 @@ export default function Home() {
                   <FontAwesome5 name={categoryStyle.icon} size={20} color={categoryStyle.text} style={{ opacity: 0.7 }} />
                 </View>
                 <View className='flex-1'>
-                  <Text className='text-sm text-gray-500 dark:text-gray-400'>
-                    {item.category}
-                  </Text>
-                  <Text className='text-base font-medium text-gray-800 dark:text-gray-100'>
+                  <Text className='text-lg font-medium text-gray-500 dark:text-gray-100'>
                     {item.subCategory}
                   </Text>
+                  <View className='flex-row flex-wrap'>
+                    <View 
+                      style={{ backgroundColor: categoryStyle.bg, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 4 }}
+                    >
+                      <Text className='font-medium' style={{ color: categoryStyle.text, fontSize: 12, }}>
+                        {item.title}
+                      </Text>
+                    </View>
+                  </View>
                 </View>
                 <View className='items-end'>
                   <Text className='text-sm text-gray-500 dark:text-gray-400'>
@@ -670,34 +690,76 @@ export default function Home() {
     }
   };
 
-  // Display loading state
-  if (isLoading) {
-    return (
-      <View className="flex-1 justify-center items-center bg-white dark:bg-gray-900">
-        <Text className="text-gray-800 dark:text-gray-100">Loading sessions...</Text>
-      </View>
-    );
-  }
+  // Internet status state
+  const [isOnline, setIsOnline] = React.useState(true);
+
+  // Check internet connection status
+  React.useEffect(() => {
+    const handleConnectionChange = (state: any) => {
+      setIsOnline(state.isConnected || state.isInternetReachable);
+    };
+
+    // Set up initial value and subscribe to network info changes
+    const unsubscribe = NetInfo.addEventListener(handleConnectionChange);
+
+    // Cleanup on unmount
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  // Get status color based on online and sync status
+  const getStatusColor = () => {
+    if (!isOnline) return '#EF4444'; // Red - offline
+    if (isSyncing) return '#F59E0B'; // Amber - syncing
+    return '#10B981'; // Green - online and synced
+  };
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <BottomSheetModalProvider>
         <Animated.View 
-          className='flex-1 bg-white dark:bg-gray-900'
-          style={{ opacity: fadeAnim }}
+          className='flex-1 dark:bg-black'
+          style={{ opacity: fadeAnim, backgroundColor: '#fafaff' }}
         >
           <View className='flex-1 px-4'>
+
+          <View className='flex-row justify-between items-center mx-2 my-2'>
+            <Text className='text-sm font-semibold text-gray-400 dark:text-gray-100'>
+              What are you doing now?
+            </Text>
+            
+            {/* Status indicator */}
+            <TouchableOpacity 
+              onPress={handleManualSync}
+              className='flex-row items-center mr-2'
+              disabled={!isOnline || isSyncing}
+            >
+              <View 
+                style={{ 
+                  backgroundColor: getStatusColor(),
+                  width: 8, 
+                  height: 8, 
+                  borderRadius: 4
+                }} 
+              />
+              {/* <Text className='text-xs ml-1 text-gray-400 dark:text-gray-500'>
+                {!isOnline ? 'Offline' : isSyncing ? 'Syncing...' : 'Online'}
+              </Text> */}
+            </TouchableOpacity>
+          </View>
             
             {/* Time Card with Animation */}
             <Animated.View className='mb-4'>
               <TimeCard 
-                time={activeSession ? formatTimerDisplay(activeSession) : "00:00:00"} 
+                time={activeSession ? formatTimerDisplay(activeSession) : "0s"} 
                 onTimeChange={() => {}}
                 projectName={activeSession?.subCategory || "No active session"}
                 onPress={activeSession ? handleOpenTimerView : undefined}
                 category={activeSession?.category}
                 backgroundColor={activeSession ? getCategoryColor(activeSession.category).bg : 'rgba(108, 92, 231, 0.15)'}
                 textColor={activeSession ? getCategoryColor(activeSession.category).text : '#6C5CE7'}
+                isActive={!!activeSession}
               />
               
               {/* Debug Controls - Long press the time card to access */}
@@ -727,9 +789,6 @@ export default function Home() {
                 </Text>
               </View>
             )}
-
-            {/* Sessions List */}
-            <Text className='text-md font-semibold mb-4 text-gray-400 dark:text-gray-100'>Sessions</Text>
             
             {sessions.length === 0 ? (
               <View className='flex-1 justify-center items-center'>
@@ -983,10 +1042,26 @@ export default function Home() {
                   <Text className='text-xl font-bold text-gray-800 dark:text-gray-100'>
                     {selectedSession.subCategory}
                   </Text>
-                  <Text className='text-md text-gray-500 dark:text-gray-400' 
-                    style={{ color: getCategoryColor(selectedSession.category).text, opacity: 0.7 }}>
-                    {selectedSession.category}
-                  </Text>
+                  <View className='flex-row mt-2'>
+                    <View 
+                      style={{ 
+                        backgroundColor: getCategoryColor(selectedSession.category).bg, 
+                        borderRadius: 12, 
+                        paddingHorizontal: 12, 
+                        paddingVertical: 4 
+                      }}
+                    >
+                      <Text 
+                        style={{ 
+                          color: getCategoryColor(selectedSession.category).text, 
+                          fontSize: 12, 
+                          fontWeight: '500' 
+                        }}
+                      >
+                        {selectedSession.title}
+                      </Text>
+                    </View>
+                  </View>
                 </View>
                 
                 <View className='flex-row justify-center w-full mt-4'>
@@ -1041,11 +1116,6 @@ const styles = StyleSheet.create({
     marginBottom: 3,
     borderRadius: 20,
     backgroundColor: '#fff',
-    shadowColor: 'rgba(108, 92, 231, 0.3)',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
-    shadowRadius: 5,
-    elevation: 6,
   },
   rightAction: {
     flexDirection: 'row',

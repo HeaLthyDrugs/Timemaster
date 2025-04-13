@@ -349,22 +349,9 @@ export default function Analysis() {
     });
   }, []);
   
-  // Only show loading indicator during initial load
-  // We don't want to show loading during background syncs
-  const showFullScreenLoading = isLocalLoading && combinedSessions.length === 0;
-  
-  if (showFullScreenLoading) {
-    return (
-      <View className='flex-1 justify-center items-center bg-white dark:bg-black'>
-        <ActivityIndicator size="large" color="#6C5CE7" />
-        <Text className='mt-4 text-gray-600 dark:text-gray-400'>Loading your time data...</Text>
-      </View>
-    );
-  }
-  
   return (
     <>
-    <View className='flex-1 p-4 bg-white dark:bg-black'>
+    <View className='flex-1 p-4 dark:bg-black' style={{ backgroundColor: '#fafaff' }}>
       <View className="flex-row justify-between items-center mb-3">
         <Text className="text-sm text-gray-400">
           Today's Summary

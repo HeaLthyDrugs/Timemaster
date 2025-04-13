@@ -68,6 +68,9 @@ export default function TabLayout() {
         },
         tabBarStyle: {
           backgroundColor: colorScheme === 'dark' ? '#1c1c1c' : 'white',
+
+          borderRadius: 40,
+          paddingTop: 10,
         },
         animationEnabled: true,
         cardStyleInterpolator: forSlide,
@@ -84,7 +87,7 @@ export default function TabLayout() {
             fontWeight: 'bold',
           },
           headerStyle: {
-            backgroundColor: colorScheme === 'dark' ? 'black' : 'white',
+            backgroundColor: colorScheme === 'dark' ? 'black' : '#fafaff',
           },
           tabBarIcon: ({ color, focused }: { color: string, focused: boolean }) => (
             <TabBarIcon
@@ -110,7 +113,7 @@ export default function TabLayout() {
             fontWeight: 'bold',
           },
           headerStyle: {
-            backgroundColor: colorScheme === 'dark' ? 'black' : 'white',
+            backgroundColor: colorScheme === 'dark' ? 'black' : '#fafaff',
           },
           tabBarIcon: ({ color, focused }: { color: string, focused: boolean }) => (
             <TabBarIcon

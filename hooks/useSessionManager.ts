@@ -12,9 +12,14 @@ import {
 } from '~/services/firestore-sync';
 import { useNetwork } from '~/contexts/NetworkContext';
 import { AppState, InteractionManager } from 'react-native';
+import { isReleaseEnvironment } from '~/config/firebase';
 
-// Use a fixed key for all users to ensure sessions persist across logins
-const SESSIONS_STORAGE_KEY = 'time_sessions';
+// Use a user-specific key that's consistent across environments
+// This is crucial for syncing data between development and release builds
+const getSessionsStorageKey = (userId: string) => `time_sessions_${userId}`;
+
+// Keep a shared backup key to maintain backward compatibility
+const LEGACY_SESSIONS_STORAGE_KEY = 'time_sessions';
 
 // Debounce function to prevent multiple calls
 const debounce = (func: Function, wait: number) => {
@@ -43,6 +48,7 @@ export const useSessionManager = () => {
   const isLoadingRef = useRef(true);
   const isSyncingRef = useRef(false);
   const isOperationInProgressRef = useRef(false);
+  const initialSyncCompleteRef = useRef(false);
   
   // Update refs when state changes
   useEffect(() => {
@@ -54,14 +60,34 @@ export const useSessionManager = () => {
   
   // Save sessions to storage without triggering state updates
   const saveToStorage = useCallback(async (sessionsToSave: TimeSession[]): Promise<void> => {
-    try {
-      await AsyncStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessionsToSave));
-    } catch (error) {
-      console.error('Failed to save sessions to storage:', error);
+    if (!user) {
+      console.warn('[SessionManager] No user available for saving sessions');
+      return;
     }
-  }, []);
+    
+    try {
+      const storageKey = getSessionsStorageKey(user.uid);
+      console.log(`[SessionManager] Saving ${sessionsToSave.length} sessions to storage with key ${storageKey}`);
+      
+      // Ensure all sessions have the user ID
+      const sessionsWithUserId = sessionsToSave.map(session => ({
+        ...session,
+        userId: user.uid
+      }));
+      
+      // Save to user-specific storage
+      await AsyncStorage.setItem(storageKey, JSON.stringify(sessionsWithUserId));
+      
+      // For backward compatibility, also save to the legacy key
+      await AsyncStorage.setItem(LEGACY_SESSIONS_STORAGE_KEY, JSON.stringify(sessionsWithUserId));
+      
+      console.log(`[SessionManager] Successfully saved ${sessionsToSave.length} sessions`);
+    } catch (error) {
+      console.error('[SessionManager] Failed to save sessions to storage:', error);
+    }
+  }, [user]);
 
-  // Load sessions from local storage
+  // Load sessions from local storage with enhanced cross-environment support
   const loadSessions = useCallback(async (forceReload = false) => {
     // Prevent concurrent loads
     if (isOperationInProgressRef.current && !forceReload) return;
@@ -70,11 +96,48 @@ export const useSessionManager = () => {
       isOperationInProgressRef.current = true;
       setIsLoading(true);
       
-      console.log('[SessionManager] Loading sessions from storage');
-      const storedSessions = await AsyncStorage.getItem(SESSIONS_STORAGE_KEY);
+      if (!user) {
+        console.warn('[SessionManager] No user available for loading sessions');
+        setSessions([]);
+        setActiveSession(null);
+        setIsLoading(false);
+        return;
+      }
+      
+      const userId = user.uid;
+      const userStorageKey = getSessionsStorageKey(userId);
+      
+      console.log(`[SessionManager] Loading sessions from storage with key ${userStorageKey} in ${isReleaseEnvironment ? 'RELEASE' : 'DEVELOPMENT'} mode`);
+      
+      // Try to load from user-specific storage first
+      let storedSessions = await AsyncStorage.getItem(userStorageKey);
+      
+      // If no user-specific sessions, try legacy storage
+      if (!storedSessions) {
+        console.log('[SessionManager] No user-specific sessions found, checking legacy storage');
+        storedSessions = await AsyncStorage.getItem(LEGACY_SESSIONS_STORAGE_KEY);
+        
+        // If found in legacy storage, migrate to user-specific storage
+        if (storedSessions) {
+          console.log('[SessionManager] Migrating sessions from legacy storage');
+          await AsyncStorage.setItem(userStorageKey, storedSessions);
+        }
+      }
       
       if (storedSessions) {
-        const parsedSessions = JSON.parse(storedSessions) as TimeSession[];
+        let parsedSessions = JSON.parse(storedSessions) as TimeSession[];
+        
+        // Filter out any sessions that don't belong to this user
+        parsedSessions = parsedSessions.filter((session) => 
+          !session.userId || session.userId === userId
+        );
+        
+        // Ensure all sessions have the user ID
+        parsedSessions = parsedSessions.map((session) => ({
+          ...session,
+          userId: userId
+        }));
+        
         const sessionsWithDates = parsedSessions.map((session) => ({
           ...session,
           startTime: new Date(session.startTime),
@@ -89,7 +152,7 @@ export const useSessionManager = () => {
         
         // Set state in a single update
         InteractionManager.runAfterInteractions(() => {
-          console.log('[SessionManager] Setting sessions in state');
+          console.log(`[SessionManager] Setting ${sessionsWithDates.length} sessions in state`);
           setSessions(sessionsWithDates);
           
           if (active) {
@@ -101,6 +164,9 @@ export const useSessionManager = () => {
           
           setIsLoading(false);
         });
+        
+        // Save back with proper user ID in case we did filtering
+        saveToStorage(sessionsWithDates);
       } else {
         // No sessions found, set empty array
         InteractionManager.runAfterInteractions(() => {
@@ -119,7 +185,7 @@ export const useSessionManager = () => {
         isOperationInProgressRef.current = false;
       }, 500);
     }
-  }, []);
+  }, [user, saveToStorage]);
 
   // Stop the active session
   const stopSession = useCallback(async () => {
@@ -527,7 +593,7 @@ export const useSessionManager = () => {
     }
     
     try {
-      console.log('[SessionManager] Starting manual sync');
+      console.log(`[SessionManager] Starting manual sync in ${isReleaseEnvironment ? 'RELEASE' : 'DEVELOPMENT'} mode`);
       isOperationInProgressRef.current = true;
       setIsSyncing(true);
       
@@ -535,8 +601,16 @@ export const useSessionManager = () => {
       await new Promise<void>(resolve => {
         InteractionManager.runAfterInteractions(async () => {
           try {
-            // Pull remote changes first
-            await pullRemoteSessions(user.uid);
+            // Pull remote changes first with aggressive retry for cross-environment sync
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                await pullRemoteSessions(user.uid);
+                break; // Success, exit retry loop
+              } catch (error) {
+                console.error(`[SessionManager] Error pulling remote sessions (attempt ${attempt + 1}/3):`, error);
+                if (attempt < 2) await new Promise(r => setTimeout(r, 1000)); // Wait before retry
+              }
+            }
             
             // Then push local changes
             await syncAllPendingSessions(user.uid);
@@ -545,7 +619,7 @@ export const useSessionManager = () => {
             await loadSessions(true);
             resolve();
           } catch (error) {
-            console.error('[SessionManager] Error during background sync:', error);
+            console.error('[SessionManager] Error during manual sync:', error);
             resolve();
           }
         });
@@ -600,7 +674,7 @@ export const useSessionManager = () => {
 
   // Initial load - only once on mount
   useEffect(() => {
-    console.log('[SessionManager] Initial load');
+    console.log(`[SessionManager] Initial load in ${isReleaseEnvironment ? 'RELEASE' : 'DEVELOPMENT'} mode`);
     loadSessions();
     
     // If user returns to app, refresh sessions
@@ -630,12 +704,41 @@ export const useSessionManager = () => {
         }
       });
       
-      // Initial sync attempt
+      // Initial sync attempt with aggressive retry for cross-environment sync
       if (isConnected) {
-        pullRemoteSessions(user.uid)
-          .then(() => syncAllPendingSessions(user.uid))
-          .then(() => loadSessions(true))
-          .catch(console.error);
+        const performInitialSync = async () => {
+          setIsSyncing(true);
+          initialSyncCompleteRef.current = false;
+          
+          try {
+            // Extra delay on first sync to ensure Firebase is fully initialized
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Pull with more aggressive retry attempts
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                await pullRemoteSessions(user.uid);
+                break; // Success, exit retry loop
+              } catch (error) {
+                console.error(`[SessionManager] Initial sync error (attempt ${attempt + 1}/3):`, error);
+                if (attempt < 2) await new Promise(r => setTimeout(r, 1500)); // Longer wait for initial sync
+              }
+            }
+            
+            // Push our local changes
+            await syncAllPendingSessions(user.uid);
+            
+            // Final reload after sync
+            await loadSessions(true);
+            initialSyncCompleteRef.current = true;
+          } catch (error) {
+            console.error('[SessionManager] Failed initial sync:', error);
+          } finally {
+            setIsSyncing(false);
+          }
+        };
+        
+        performInitialSync();
       }
     }
     

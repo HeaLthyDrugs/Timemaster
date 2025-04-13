@@ -7,6 +7,7 @@ import syncUtils from './sync-utils';
 import firestore from '@react-native-firebase/firestore';
 import { Platform } from 'react-native';
 import { InteractionManager } from 'react-native';
+import { isReleaseEnvironment } from '~/config/firebase';
 
 // Collections
 const SESSIONS_COLLECTION = 'sessions';
@@ -407,97 +408,122 @@ export async function pullRemoteSessions(userId: string): Promise<void> {
   if (!userId) return;
   
   try {
-    // Fetch remote sessions - use the proper collection path
-    const snapshot = await db.collection('users').doc(userId)
-      .collection('sessions')
-      .where('userId', '==', userId)
-      .get();
+    console.log(`[Sync] Pulling remote sessions for user ${userId} in ${isReleaseEnvironment ? 'RELEASE' : 'DEVELOPMENT'} environment`);
     
-    if (snapshot.empty) {
-      console.log('No remote sessions found');
+    // Check network connectivity first
+    const netInfo = await NetInfo.fetch();
+    if (!netInfo.isConnected || !netInfo.isInternetReachable) {
+      console.log('No network connection, skipping remote pull');
       return;
     }
     
-    // Get local sessions
+    // Force a small delay to ensure Firebase connection is ready
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Get local sessions first
     const storageKey = getStorageKey(userId);
     const storedSessions = await AsyncStorage.getItem(storageKey);
-    let localSessions: TimeSession[] = storedSessions 
-      ? JSON.parse(storedSessions) 
-      : [];
+    const localSessions: TimeSession[] = storedSessions ? JSON.parse(storedSessions) : [];
     
-    // Convert date strings to Date objects in local sessions
-    localSessions = localSessions.map(session => ({
-      ...session,
-      startTime: new Date(session.startTime),
-      endTime: session.endTime ? new Date(session.endTime) : undefined,
-      updatedAt: session.updatedAt ? new Date(session.updatedAt) : undefined,
-      syncedAt: session.syncedAt ? new Date(session.syncedAt) : undefined,
-      lastSyncAttempt: session.lastSyncAttempt ? new Date(session.lastSyncAttempt) : undefined
-    }));
+    console.log(`[Sync] Found ${localSessions.length} local sessions`);
     
-    // Process remote sessions
-    const remoteSessions: TimeSession[] = [];
-    snapshot.forEach(doc => {
-      const remoteSession = parseSessionFromFirestore({
-        ...doc.data(),
-        id: doc.id,
-        firebaseId: doc.id
-      });
-      remoteSessions.push(remoteSession);
+    // Map local sessions by ID for quick lookup
+    const localSessionsMap = new Map<string, TimeSession>();
+    localSessions.forEach(session => {
+      localSessionsMap.set(session.id, session);
+      // Also map by firebaseId if it exists and is different from id
+      if (session.firebaseId && session.firebaseId !== session.id) {
+        localSessionsMap.set(session.firebaseId, session);
+      }
     });
     
-    console.log(`[Sync] Found ${remoteSessions.length} remote sessions`);
+    // Get the user's sessions from Firestore
+    // Use a large limit to ensure we get all sessions
+    const sessionsCollection = db.collection('users').doc(userId).collection('sessions');
+    const snapshot = await sessionsCollection.limit(500).get();
     
-    // Merge sessions
-    const mergedSessions: TimeSession[] = [];
-    const localSessionMap = new Map(localSessions.map(s => [s.id, s]));
-    const remoteSessionMap = new Map(remoteSessions.map(s => [s.id, s]));
-    
-    // Include all sessions, handle conflicts
-    const allSessionIds = new Set([
-      ...localSessions.map(s => s.id),
-      ...remoteSessions.map(s => s.id)
-    ]);
-    
-    for (const id of allSessionIds) {
-      const local = localSessionMap.get(id);
-      const remote = remoteSessionMap.get(id);
+    if (snapshot.empty) {
+      console.log(`[Sync] No remote sessions found for user ${userId}`);
       
-      if (local && remote) {
-        // Both exist, check if there's a conflict
-        if (
-          local.updatedAt && 
-          remote.updatedAt && 
-          local.updatedAt > remote.updatedAt
-        ) {
-          // Local is newer
-          mergedSessions.push(local);
-        } else if (
-          local.updatedAt && 
-          remote.updatedAt && 
-          local.updatedAt < remote.updatedAt
-        ) {
-          // Remote is newer
-          mergedSessions.push(remote);
-        } else {
-          // Same timestamp or complex conflict, resolve
-          const resolved = await handleConflict(local, remote);
-          mergedSessions.push(resolved);
-        }
-      } else if (local) {
-        // Only exists locally
-        mergedSessions.push(local);
-      } else if (remote) {
-        // Only exists remotely
-        mergedSessions.push(remote);
+      // If there are local sessions but no remote sessions, push local sessions to remote
+      if (localSessions.length > 0) {
+        console.log(`[Sync] Pushing ${localSessions.length} local sessions to remote`);
+        // Call syncAllPendingSessions but don't await its completion to avoid type error
+        syncAllPendingSessions(userId).catch(err => 
+          console.error('[Sync] Error pushing local sessions to remote:', err)
+        );
+      }
+      
+      return;
+    }
+    
+    console.log(`[Sync] Found ${snapshot.docs.length} remote sessions`);
+    
+    // Track which sessions we've processed
+    const processedIds = new Set<string>();
+    
+    // Process remote sessions and merge with local
+    const mergedSessions: TimeSession[] = [];
+    
+    for (const doc of snapshot.docs) {
+      const remoteSession = doc.data();
+      processedIds.add(doc.id);
+      
+      // Convert remote session dates from Firestore
+      const parsedRemoteSession = parseSessionFromFirestore(remoteSession);
+      
+      // Check if we have this session locally
+      const localSession = localSessionsMap.get(doc.id) || 
+                           (parsedRemoteSession.firebaseId ? 
+                            localSessionsMap.get(parsedRemoteSession.firebaseId) : 
+                            undefined);
+      
+      if (localSession) {
+        // We have this session locally, resolve any conflicts
+        const resolvedSession = await handleConflict(localSession, parsedRemoteSession);
+        mergedSessions.push(resolvedSession);
+      } else {
+        // This is a new session from the remote, add it
+        mergedSessions.push({
+          ...parsedRemoteSession,
+          syncStatus: 'synced',
+          syncedAt: new Date()
+        });
       }
     }
     
-    // Save merged sessions
+    // Add any local sessions that weren't in the remote set
+    for (const localSession of localSessions) {
+      if (!processedIds.has(localSession.id) && 
+          (!localSession.firebaseId || !processedIds.has(localSession.firebaseId))) {
+        
+        // If this local session hasn't been synced, mark it for sync
+        if (localSession.syncStatus !== 'synced') {
+          mergedSessions.push({
+            ...localSession,
+            syncStatus: 'pending'
+          });
+        } else {
+          mergedSessions.push(localSession);
+        }
+      }
+    }
+    
+    // Save merged sessions to local storage
+    console.log(`[Sync] Saving ${mergedSessions.length} merged sessions to local storage`);
     await AsyncStorage.setItem(storageKey, JSON.stringify(mergedSessions));
-    console.log(`[Sync] Saved ${mergedSessions.length} merged sessions to storage`);
-  } catch (error) {
-    console.error('[Sync] Failed to pull remote sessions:', error);
+    
+    // Update last sync timestamp
+    const lastSyncKey = getLastSyncKey(userId);
+    await AsyncStorage.setItem(lastSyncKey, new Date().toISOString());
+    
+    // Log sync success
+    console.log(`[Sync] Successfully pulled and merged remote sessions`);
+    logSync(userId, 'success', `Pulled ${snapshot.docs.length} remote sessions, merged to ${mergedSessions.length} total`);
+    
+  } catch (error: any) {
+    console.error('Failed to pull remote sessions:', error);
+    logSync(userId, 'error', `Failed to pull remote sessions: ${error.message || 'Unknown error'}`);
   }
 }
 
