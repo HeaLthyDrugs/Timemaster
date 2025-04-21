@@ -1,6 +1,6 @@
 import { Stack } from 'expo-router';
 import { useColorScheme } from 'nativewind';
-import { StyleSheet, Text, View, ActivityIndicator, TouchableOpacity, Platform, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, ActivityIndicator, TouchableOpacity, Platform, ScrollView, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSessionManager } from '~/hooks/useSessionManager';
 import { ScreenContent } from '~/components/ScreenContent';
@@ -27,6 +27,7 @@ const Analysis = () => {
   const [showSyncIndicator, setShowSyncIndicator] = useState(false);
   const isFocused = useIsFocused();
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const { width } = useWindowDimensions();
   
   // Categorized durations in milliseconds
   const [categorized, setCategorized] = useState({
@@ -236,31 +237,41 @@ const Analysis = () => {
           </View>
         ) : (
           <>
-            {/* Analytics Cards */}
-            <View style={styles.cardsContainer}>
-              <TrackingCard
-                title="Clarity"
-                time={formatTime(categorized.clarity)}
-                description="Goal-oriented work"
-                backgroundColor={colorScheme === 'dark' ? '#1e3a8a' : '#dbeafe'}
-                delay={0}
-              />
+            {/* Bento Grid Layout for Analytics Cards */}
+            <View style={styles.bentoContainer}>
+              {/* First row - Clarity Card (Takes full width) */}
+              <View style={styles.bentoTopRow}>
+                <TrackingCard
+                  title="Clarity"
+                  time={formatTime(categorized.clarity)}
+                  description="Goal-oriented work"
+                  backgroundColor={colorScheme === 'dark' ? '#1e3a8a' : '#dbeafe'}
+                  delay={0}
+                />
+              </View>
               
-              <TrackingCard
-                title="Body"
-                time={formatTime(categorized.body)}
-                description="Health activities"
-                backgroundColor={colorScheme === 'dark' ? '#065f46' : '#d1fae5'}
-                delay={100}
-              />
-              
-              <TrackingCard
-                title="Lost"
-                time={formatTime(categorized.lost)}
-                description="Time wasted"
-                backgroundColor={colorScheme === 'dark' ? '#9d174d' : '#fce7f3'}
-                delay={200}
-              />
+              {/* Second row - Lost and Body cards side by side */}
+              <View style={styles.bentoBottomRow}>
+                <View style={styles.leftCard}>
+                  <TrackingCard
+                    title="Lost"
+                    time={formatTime(categorized.lost)}
+                    description="Time wasted"
+                    backgroundColor={colorScheme === 'dark' ? '#9d174d' : '#fce7f3'}
+                    delay={100}
+                  />
+                </View>
+                
+                <View style={styles.rightCard}>
+                  <TrackingCard
+                    title="Body"
+                    time={formatTime(categorized.body)}
+                    description="Health activities"
+                    backgroundColor={colorScheme === 'dark' ? '#065f46' : '#d1fae5'}
+                    delay={200}
+                  />
+                </View>
+              </View>
             </View>
             
             {/* Charts */}
@@ -272,7 +283,6 @@ const Analysis = () => {
                 Time Analysis
               </Text>
               <Charts
-                timeData={categorized}
                 sessions={sessions.filter(session => !session.deleted)}
               />
             </View>
@@ -312,10 +322,43 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cardsContainer: {
-    flexDirection: 'row',
-    gap: 10,
+  bentoContainer: {
     marginBottom: 24,
+  },
+  bentoTopRow: {
+    marginBottom: 10,
+    borderRadius: 24,
+    overflow: 'hidden',
+  },
+  bentoBottomRow: {
+    flexDirection: 'row',
+  },
+  leftCard: {
+    flex: 1,
+    borderRadius: 24,
+    overflow: 'hidden',
+    marginRight: 5,
+  },
+  rightCard: {
+    flex: 1,
+    borderRadius: 24,
+    overflow: 'hidden',
+    marginLeft: 5,
+  },
+  emptyState: {
+    marginTop: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyStateText: {
+    marginTop: 16,
+    fontSize: 16,
+    textAlign: 'center',
+  },
+  emptyStateSubText: {
+    marginTop: 8,
+    fontSize: 14,
+    textAlign: 'center',
   },
   chartsContainer: {
     marginBottom: 24,

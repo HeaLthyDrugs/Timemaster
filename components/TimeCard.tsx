@@ -94,7 +94,7 @@ export default function TimeCard({
     
     // Start pulse animation for active timer
     if (isActive) {
-      startPulseAnimation();
+      // startPulseAnimation();
     }
     
     return () => {
@@ -106,7 +106,7 @@ export default function TimeCard({
   // When active state changes, adjust pulse animation
   useEffect(() => {
     if (isActive) {
-      startPulseAnimation();
+      // startPulseAnimation();
     } else {
       pulseAnim.stopAnimation();
       pulseAnim.setValue(1);
@@ -133,9 +133,16 @@ export default function TimeCard({
   
   return (
     <Animated.View
-      style={{
-        opacity: fadeAnim
-      }}
+      style={[
+        {
+          opacity: fadeAnim,
+          transform: [
+            { scale: scaleAnim },
+            { scale: isActive ? pulseAnim : 1 }
+          ]
+        },
+        styles.cardWrapper
+      ]}
     >
       <TouchableOpacity 
         onPress={onPress}
@@ -143,7 +150,7 @@ export default function TimeCard({
           styles.container,
           { backgroundColor }
         ]}
-        className='p-6 rounded-3xl mb-3'
+        className='p-6 rounded-3xl'
         activeOpacity={0.9}
       >
         <View style={{ position: 'relative' }}>
@@ -174,6 +181,17 @@ export default function TimeCard({
 }
 
 const styles = StyleSheet.create({
+  cardWrapper: {
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 5,
+    marginBottom: 8,
+  },
   container: {
     backgroundColor: 'black',
   },

@@ -1,26 +1,14 @@
-import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { View, Text, StyleSheet, Dimensions, TouchableOpacity } from 'react-native';
 import { useColorScheme } from 'nativewind';
-import {
-  Canvas,
-  Path,
-  vec,
-  Circle,
-  SweepGradient,
-} from '@shopify/react-native-skia';
-import Animated, {
-  useSharedValue,
-  useDerivedValue,
-  withTiming,
-  Easing,
-  runOnJS,
-} from 'react-native-reanimated';
 import { TimeSession } from '~/types/timeSession';
+import Svg, { Path, Circle, Text as SvgText } from 'react-native-svg';
 
 // Screen dimensions
 const { width } = Dimensions.get('window');
 const CHART_WIDTH = width - 48; // Accounting for padding
-const CHART_HEIGHT = 220;
+const CHART_HEIGHT = 240;
+const CHART_SIZE = Math.min(CHART_WIDTH, CHART_HEIGHT);
 const PADDING = 16;
 
 // Colors based on the app's theme
@@ -29,22 +17,16 @@ const COLORS = {
     light: '#dbeafe',
     dark: '#1e3a8a',
     main: '#A0D2FF',
-    grad1: '#A0D2FF',
-    grad2: '#80C2FF',
   },
   lost: {
     light: '#fce7f3',
     dark: '#9d174d',
     main: '#FFBFC8',
-    grad1: '#FFBFC8',
-    grad2: '#FFA0B0',
   },
   body: { 
     light: '#d1fae5',
     dark: '#065f46',
     main: '#BBFFCC',
-    grad1: '#BBFFCC',
-    grad2: '#A0FFB8',
   },
   text: {
     light: '#1f2937',
@@ -73,16 +55,11 @@ const COLORS = {
 };
 
 // Filter period options
-const FILTER_PERIODS = ['Today', '7 Days', '30 Days'] as const;
+const FILTER_PERIODS = ['7 Days', '30 Days', 'All Time'] as const;
 type FilterPeriod = typeof FILTER_PERIODS[number];
 
 // Props interface
 interface ChartsProps {
-  timeData: {
-    clarity: number;
-    lost: number;
-    body: number;
-  };
   sessions: TimeSession[];
 }
 
@@ -98,6 +75,50 @@ const formatTime = (minutes: number): string => {
   return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 };
 
+// Converts polar coordinates to cartesian
+function polarToCartesian(centerX: number, centerY: number, radius: number, angleInDegrees: number) {
+  const angleInRadians = (angleInDegrees - 90) * Math.PI / 180.0;
+  return {
+    x: centerX + (radius * Math.cos(angleInRadians)),
+    y: centerY + (radius * Math.sin(angleInRadians))
+  };
+}
+
+// Creates an SVG arc path
+function describeArc(x: number, y: number, radius: number, innerRadius: number, startAngle: number, endAngle: number) {
+  // Ensure we have valid angles
+  startAngle = Math.max(startAngle, 0);
+  endAngle = Math.min(endAngle, 359.999); // Avoid full circle which can cause rendering issues
+  
+  const start = polarToCartesian(x, y, radius, endAngle);
+  const end = polarToCartesian(x, y, radius, startAngle);
+  const innerStart = polarToCartesian(x, y, innerRadius, endAngle);
+  const innerEnd = polarToCartesian(x, y, innerRadius, startAngle);
+  
+  const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
+  
+  // Create the path
+  const d = [
+    "M", start.x, start.y,
+    "A", radius, radius, 0, largeArcFlag, 0, end.x, end.y,
+    "L", innerEnd.x, innerEnd.y,
+    "A", innerRadius, innerRadius, 0, largeArcFlag, 1, innerStart.x, innerStart.y,
+    "Z"
+  ].join(" ");
+  
+  return d;
+}
+
+// Define interface for chart segment
+interface ChartSegment {
+  path: string;
+  color: string;
+  hasData: boolean;
+  label?: string;
+  value?: string;
+  percentage?: number;
+}
+
 // Process data based on selected period
 const processTimePeriod = (sessions: TimeSession[], period: FilterPeriod): {
   clarity: number;
@@ -106,7 +127,7 @@ const processTimePeriod = (sessions: TimeSession[], period: FilterPeriod): {
 } => {
   if (!sessions || sessions.length === 0) {
     return { clarity: 0, lost: 0, body: 0 };
-}
+  }
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -117,6 +138,9 @@ const processTimePeriod = (sessions: TimeSession[], period: FilterPeriod): {
     startDate.setDate(today.getDate() - 6);
   } else if (period === '30 Days') {
     startDate.setDate(today.getDate() - 29);
+  } else if (period === 'All Time') {
+    // For all time, use a very old date to include everything
+    startDate = new Date(0);
   }
   
   // Tomorrow
@@ -189,37 +213,24 @@ const processTimePeriod = (sessions: TimeSession[], period: FilterPeriod): {
   return { clarity: clarityTime, lost: lostTime, body: bodyTime };
 };
 
-const Charts = ({ timeData, sessions }: ChartsProps) => {
+const Charts = ({ sessions }: ChartsProps) => {
   const { colorScheme } = useColorScheme();
   const isDark = colorScheme === 'dark';
   
-  // State for filter period and animation tracking
-  const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>('Today');
+  // State for filter period and error handling
+  const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>('7 Days');
   const [hasError, setHasError] = useState(false);
-  const [isAnimated, setIsAnimated] = useState(false);
-  
-  // Special identifier to track data changes
-  const dataIdRef = useRef(0);
-  
-  // Animation value - only used once per data change
-  const animationProgress = useSharedValue(0);
   
   // Process time data based on the selected filter period
   const processedTimeData = useMemo(() => {
     try {
-      // If Today is selected, use the provided timeData
-      if (filterPeriod === 'Today') {
-        return timeData;
-      }
-      
-      // Otherwise, process sessions based on the selected period
       return processTimePeriod(sessions, filterPeriod);
     } catch (error) {
       console.error('Error processing time data:', error);
       setHasError(true);
       return { clarity: 0, lost: 0, body: 0 };
     }
-  }, [timeData, sessions, filterPeriod]);
+  }, [sessions, filterPeriod]);
   
   // Calculate total minutes for donut chart
   const totalMinutes = useMemo(() => {
@@ -246,52 +257,85 @@ const Charts = ({ timeData, sessions }: ChartsProps) => {
     };
   }, [processedTimeData]);
   
-  // Memoize chart values to avoid recalculations and worklet issues
-  const chartValues = useMemo(() => {
-    return {
-      clarityPercent: percentages.clarity,
-      lostPercent: percentages.lost,
-      bodyPercent: percentages.body,
-      dataId: ++dataIdRef.current // Increment data ID to track changes
-    };
-  }, [percentages]);
+  // Colors for the chart - alternate between light and dark based on theme
+  const chartColors = useMemo(() => [
+    isDark ? COLORS.clarity.dark : COLORS.clarity.light,
+    isDark ? COLORS.body.dark : COLORS.body.light,
+    isDark ? COLORS.lost.dark : COLORS.lost.light
+  ], [isDark]);
   
-  // Function to handle filter period change
-  const handleFilterPeriodChange = useCallback((period: FilterPeriod) => {
-    setFilterPeriod(period);
-    // Reset animation state when filter changes
-    setIsAnimated(false);
-  }, []);
+  // Handle filter period changes
+  const handleFilterChange = useCallback((period: FilterPeriod) => {
+    if (filterPeriod !== period) {
+      setFilterPeriod(period);
+    }
+  }, [filterPeriod]);
   
-  // Function to mark animation as completed
-  const markAnimationComplete = useCallback(() => {
-    setIsAnimated(true);
-  }, []);
+  // Total time formatted for center display
+  const totalTimeFormatted = formatTime(Math.round(totalMinutes / (1000 * 60)));
   
-  // Trigger animation ONLY when data changes AND animation hasn't run yet
-  useEffect(() => {
-    // Skip animation if it already ran for this data
-    if (isAnimated) {
-      return;
+  // Generate pie segments for the chart
+  const pieSegments = useMemo<ChartSegment[]>(() => {
+    const centerX = CHART_SIZE / 2;
+    const centerY = CHART_SIZE / 2;
+    const outerRadius = CHART_SIZE * 0.4; // 80% of half the chart size
+    const innerRadius = CHART_SIZE * 0.2; // 40% of half the chart size
+    
+    // If no data, return a placeholder
+    if (totalMinutes <= 1) {
+      return [{
+        path: describeArc(centerX, centerY, outerRadius, innerRadius, 0, 359.99),
+        color: isDark ? '#4B5563' : '#E5E7EB',
+        hasData: false
+      }];
     }
     
-    // Reset animation value
-    animationProgress.value = 0;
+    const segments: ChartSegment[] = [];
+    let startAngle = 0;
     
-    // Start animation with a small delay
-    const timer = setTimeout(() => {
-      animationProgress.value = withTiming(1, {
-        duration: 1000,
-        easing: Easing.bezier(0.25, 0.1, 0.25, 1),
-      }, (finished) => {
-        if (finished) {
-          runOnJS(markAnimationComplete)();
-        }
+    // Add Clarity segment
+    if (processedTimeData.clarity > 0) {
+      const endAngle = startAngle + (percentages.clarity * 3.6); // 3.6 = 360 / 100
+      segments.push({
+        path: describeArc(centerX, centerY, outerRadius, innerRadius, startAngle, endAngle),
+        color: chartColors[0],
+        label: 'Clarity',
+        value: formattedTimes.clarity,
+        percentage: percentages.clarity,
+        hasData: true
       });
-    }, 50);
+      startAngle = endAngle;
+    }
     
-    return () => clearTimeout(timer);
-  }, [animationProgress, chartValues.dataId, isAnimated, markAnimationComplete]);
+    // Add Body segment
+    if (processedTimeData.body > 0) {
+      const endAngle = startAngle + (percentages.body * 3.6);
+      segments.push({
+        path: describeArc(centerX, centerY, outerRadius, innerRadius, startAngle, endAngle),
+        color: chartColors[1],
+        label: 'Body',
+        value: formattedTimes.body,
+        percentage: percentages.body,
+        hasData: true
+      });
+      startAngle = endAngle;
+    }
+    
+    // Add Lost segment
+    if (processedTimeData.lost > 0) {
+      const endAngle = startAngle + (percentages.lost * 3.6);
+      segments.push({
+        path: describeArc(centerX, centerY, outerRadius, innerRadius, startAngle, endAngle),
+        color: chartColors[2],
+        label: 'Lost',
+        value: formattedTimes.lost,
+        percentage: percentages.lost,
+        hasData: true
+      });
+    }
+    
+    return segments;
+  }, [percentages, chartColors, processedTimeData, totalMinutes, formattedTimes, isDark]);
   
   // Error state fallback UI
   if (hasError) {
@@ -310,27 +354,40 @@ const Charts = ({ timeData, sessions }: ChartsProps) => {
     );
   }
   
-  // Component for filter period tabs
+  // Component for filter tabs
   const FilterTabs = () => (
-    <View style={styles.filterTabsContainer}>
+    <View style={styles.tabContainer}>
       {FILTER_PERIODS.map((period) => (
         <TouchableOpacity
           key={period}
           style={[
-            styles.filterTab,
-            filterPeriod === period && styles.activeFilterTab,
-            { backgroundColor: filterPeriod === period ? 
-              (isDark ? COLORS.tabActive.dark : COLORS.tabActive.light) : 
-              (isDark ? COLORS.tabInactive.dark : COLORS.tabInactive.light) }
+            styles.tabButton,
+            {
+              backgroundColor:
+                filterPeriod === period
+                  ? isDark
+                    ? COLORS.tabActive.dark
+                    : COLORS.tabActive.light
+                  : isDark
+                  ? COLORS.tabInactive.dark
+                  : COLORS.tabInactive.light,
+            },
           ]}
-          onPress={() => handleFilterPeriodChange(period)}
+          onPress={() => handleFilterChange(period)}
         >
           <Text
             style={[
-              styles.filterTabText,
-              { color: filterPeriod === period ? 
-                (isDark ? COLORS.tabTextActive.dark : COLORS.tabTextActive.light) : 
-                (isDark ? COLORS.tabTextInactive.dark : COLORS.tabTextInactive.light) }
+              styles.tabText,
+              {
+                color:
+                  filterPeriod === period
+                    ? isDark
+                      ? COLORS.tabTextActive.dark
+                      : COLORS.tabTextActive.light
+                    : isDark
+                    ? COLORS.tabTextInactive.dark
+                    : COLORS.tabTextInactive.light,
+              },
             ]}
           >
             {period}
@@ -340,168 +397,91 @@ const Charts = ({ timeData, sessions }: ChartsProps) => {
     </View>
   );
   
-  // Helper for polar to cartesian conversion
-  const polarToCartesian = (cx: number, cy: number, r: number, angle: number) => {
-    'worklet';
-    const angleInRadians = ((angle - 90) * Math.PI) / 180;
-    return {
-      x: cx + r * Math.cos(angleInRadians),
-      y: cy + r * Math.sin(angleInRadians),
-    };
-  };
-  
-  // Create paths for each segment
-  const makeArc = (startAngle: number, endAngle: number, centerX: number, centerY: number, radius: number, innerRadius: number): string => {
-    'worklet';
-    const start = polarToCartesian(centerX, centerY, radius, endAngle);
-    const end = polarToCartesian(centerX, centerY, radius, startAngle);
-    const innerStart = polarToCartesian(centerX, centerY, innerRadius, endAngle);
-    const innerEnd = polarToCartesian(centerX, centerY, innerRadius, startAngle);
-    
-    const largeArcFlag = endAngle - startAngle <= 180 ? 0 : 1;
-    
-    return `
-      M ${start.x} ${start.y}
-      A ${radius} ${radius} 0 ${largeArcFlag} 0 ${end.x} ${end.y}
-      L ${innerEnd.x} ${innerEnd.y}
-      A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 1 ${innerStart.x} ${innerStart.y}
-      Z
-    `;
-  };
-  
-  // Center coordinates
-  const centerX = CHART_WIDTH / 2;
-  const centerY = CHART_HEIGHT / 2;
-  const radius = Math.min(centerX, centerY) - 40;
-  const innerRadius = radius * 0.65;
-  
-  // Calculate angles for segments - using fixed shared values to avoid recomputation
-  const clarityAngle = useDerivedValue(() => {
-    'worklet';
-    return 360 * (chartValues.clarityPercent / 100) * animationProgress.value;
-  });
-  
-  const lostAngle = useDerivedValue(() => {
-    'worklet';
-    return 360 * (chartValues.lostPercent / 100) * animationProgress.value;
-  });
-  
-  const bodyAngle = useDerivedValue(() => {
-    'worklet';
-    return 360 * (chartValues.bodyPercent / 100) * animationProgress.value;
-  });
-  
-  // Calculate paths for each segment
-  const clarityPath = useDerivedValue(() => {
-    'worklet';
-    return makeArc(0, clarityAngle.value, centerX, centerY, radius, innerRadius);
-  });
-  
-  const lostPath = useDerivedValue(() => {
-    'worklet';
-    return makeArc(clarityAngle.value, clarityAngle.value + lostAngle.value, centerX, centerY, radius, innerRadius);
-  });
-  
-  const bodyPath = useDerivedValue(() => {
-    'worklet';
-    return makeArc(
-      clarityAngle.value + lostAngle.value,
-      clarityAngle.value + lostAngle.value + bodyAngle.value,
-      centerX, centerY, radius, innerRadius
-    );
-  });
-  
-  // Legend component for donut chart
+  // Custom Legend component
   const Legend = ({ color, label, value, percentage }: { 
     color: string; 
     label: string; 
     value: string;
     percentage: number;
   }) => (
-    <View style={styles.legendItem}>
-      <View style={[styles.legendColor, { backgroundColor: color }]} />
-      <View style={styles.legendTextContainer}>
-        <Text style={[styles.legendLabel, { color: isDark ? '#f9fafb' : '#333' }]}>
-          {label}
-        </Text>
-        <Text style={[styles.legendValue, { color: isDark ? '#d1d5db' : '#666' }]}>
-          {value} {percentage > 0 && `(${percentage.toFixed(1)}%)`}
-        </Text>
-      </View>
+    <View style={styles.legendRow}>
+      <View style={[styles.colorIndicator, { backgroundColor: color }]} />
+      <Text style={[styles.legendLabel, { color: isDark ? '#f9fafb' : '#1f2937' }]}>{label}</Text>
+      <Text style={[styles.legendValue, { color: isDark ? '#f9fafb' : '#1f2937' }]}>
+        {value} {percentage > 0 && `(${percentage.toFixed(1)}%)`}
+      </Text>
     </View>
   );
-            
-            return (
+  
+  return (
     <View style={[styles.container, { backgroundColor: isDark ? COLORS.background.dark : COLORS.background.light }]}>
       {/* Period filter */}
       <FilterTabs />
       
       {/* Donut chart */}
-      <View style={styles.donutChartContainer}>
-        <Canvas style={styles.canvas}>
-          {/* Clarity segment */}
-          {processedTimeData.clarity > 0 && (
-            <Path
-              path={clarityPath}
-              color={isDark ? COLORS.clarity.dark : COLORS.clarity.light}
+      <View style={styles.chartContainer}>
+        <View style={styles.chartWrapper}>
+          {/* SVG-based Donut Chart */}
+          <Svg width={CHART_SIZE} height={CHART_SIZE} viewBox={`0 0 ${CHART_SIZE} ${CHART_SIZE}`}>
+            {/* Draw segments */}
+            {pieSegments.map((segment, index) => (
+              <Path
+                key={index}
+                d={segment.path}
+                fill={segment.color}
+                stroke="none"
+              />
+            ))}
+            
+            {/* Center Text */}
+            <SvgText
+              x={CHART_SIZE / 2}
+              y={CHART_SIZE / 2 - 10}
+              fontSize="14"
+              fontWeight="normal"
+              fill={isDark ? '#f9fafb' : '#1f2937'}
+              textAnchor="middle"
+              opacity={0.8}
             >
-              <SweepGradient
-                c={vec(centerX, centerY)}
-                    colors={[COLORS.clarity.grad1, COLORS.clarity.grad2]}
-                  />
-            </Path>
-          )}
-          
-          {/* Lost segment */}
-          {processedTimeData.lost > 0 && (
-            <Path
-              path={lostPath}
-              color={isDark ? COLORS.lost.dark : COLORS.lost.light}
+              Total Time
+            </SvgText>
+            <SvgText
+              x={CHART_SIZE / 2}
+              y={CHART_SIZE / 2 + 15}
+              fontSize="18"
+              fontWeight="bold"
+              fill={isDark ? '#f9fafb' : '#1f2937'}
+              textAnchor="middle"
             >
-              <SweepGradient
-                c={vec(centerX, centerY)}
-                    colors={[COLORS.lost.grad1, COLORS.lost.grad2]}
-                  />
-            </Path>
-          )}
-          
-          {/* Body segment */}
-          {processedTimeData.body > 0 && (
-            <Path
-              path={bodyPath}
-              color={isDark ? COLORS.body.dark : COLORS.body.light}
-            >
-              <SweepGradient
-                c={vec(centerX, centerY)}
-                    colors={[COLORS.body.grad1, COLORS.body.grad2]}
-                  />
-            </Path>
-          )}
-          
-          {/* Center circle */}
-          <Circle cx={centerX} cy={centerY} r={innerRadius} color={isDark ? COLORS.background.dark : 'white'} />
-        </Canvas>
+              {totalTimeFormatted}
+            </SvgText>
+          </Svg>
+        </View>
         
         {/* Legend */}
         <View style={styles.legendContainer}>
-          <Legend 
-            color={isDark ? COLORS.clarity.dark : COLORS.clarity.light} 
-            label="Clarity" 
-            value={formattedTimes.clarity}
-            percentage={percentages.clarity}
-          />
-          <Legend 
-            color={isDark ? COLORS.body.dark : COLORS.body.light} 
-            label="Body" 
-            value={formattedTimes.body}
-            percentage={percentages.body}
-          />
-          <Legend 
-            color={isDark ? COLORS.lost.dark : COLORS.lost.light} 
-            label="Lost" 
-            value={formattedTimes.lost}
-            percentage={percentages.lost}
-          />
+          {pieSegments.length > 0 && pieSegments.map((segment, index) => (
+            segment.hasData && (
+              <Legend 
+                key={index}
+                color={segment.color}
+                label={segment.label || ''}
+                value={segment.value || ''}
+                percentage={segment.percentage || 0}
+              />
+            )
+          ))}
+          
+          {/* Placeholder for empty state */}
+          {pieSegments.length === 1 && !pieSegments[0].hasData && (
+            <Text style={{
+              textAlign: 'center',
+              color: isDark ? '#f9fafb' : '#1f2937',
+              marginTop: 10
+            }}>
+              No data for this period
+            </Text>
+          )}
         </View>
       </View>
     </View>
@@ -510,55 +490,38 @@ const Charts = ({ timeData, sessions }: ChartsProps) => {
 
 const styles = StyleSheet.create({
   container: {
-    padding: PADDING,
+    marginVertical: 16,
     borderRadius: 12,
-    marginBottom: 16,
-  },
-  filterTabsContainer: {
-    flexDirection: 'row',
-    marginBottom: 20,
-    borderRadius: 8,
     overflow: 'hidden',
+    paddingVertical: 16,
+    paddingHorizontal: 12,
   },
-  filterTab: {
-    flex: 1,
-    paddingVertical: 8,
+  chartContainer: {
+    height: CHART_HEIGHT + 100,
+    width: CHART_WIDTH,
     alignItems: 'center',
   },
-  activeFilterTab: {
-    borderBottomWidth: 2,
-    borderBottomColor: '#3b82f6',
-  },
-  filterTabText: {
-    fontWeight: '500',
-  },
-  donutChartContainer: {
-    height: CHART_HEIGHT + 70, // Make room for legend
-    width: '100%',
-  },
-  canvas: {
-    height: CHART_HEIGHT,
-    width: '100%',
+  chartWrapper: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: CHART_SIZE,
+    marginTop: 10,
   },
   legendContainer: {
-    marginTop: 16,
-    paddingHorizontal: 16,
+    marginTop: 20,
+    width: '100%',
   },
-  legendItem: {
+  legendRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 10,
   },
-  legendColor: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
+  colorIndicator: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
     marginRight: 8,
-  },
-  legendTextContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    flex: 1,
   },
   legendLabel: {
     fontSize: 14,
@@ -566,11 +529,27 @@ const styles = StyleSheet.create({
   },
   legendValue: {
     fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 'auto',
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    marginBottom: 20,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  tabText: {
+    fontWeight: '500',
   },
   errorContainer: {
+    height: CHART_HEIGHT,
     justifyContent: 'center',
     alignItems: 'center',
-    height: 200,
   },
   retryButton: {
     marginTop: 16,

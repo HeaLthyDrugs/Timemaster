@@ -91,6 +91,10 @@ export default function Home() {
 
   const categories = ["Goal", "Health", "Lost"];
 
+  // Animation for TimeCard visibility
+  const timeCardHeight = React.useRef(new Animated.Value(0)).current;
+  const timeCardOpacity = React.useRef(new Animated.Value(0)).current;
+
   // Initialize animation values for each session
   React.useEffect(() => {
     sessions.forEach(session => {
@@ -136,6 +140,40 @@ export default function Home() {
       pulseAnim.setValue(1);
     }
   }, [bottomSheetMode, selectedSession, pulseAnim]);
+
+  // Update timer animation when active session changes
+  React.useEffect(() => {
+    if (activeSession) {
+      // Show TimeCard with animation
+      Animated.parallel([
+        Animated.spring(timeCardHeight, {
+          toValue: 1,
+          friction: 8,
+          tension: 50,
+          useNativeDriver: false
+        }),
+        Animated.timing(timeCardOpacity, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: false
+        })
+      ]).start();
+    } else {
+      // Hide TimeCard with animation
+      Animated.parallel([
+        Animated.timing(timeCardHeight, {
+          toValue: 0,
+          duration: 250,
+          useNativeDriver: false
+        }),
+        Animated.timing(timeCardOpacity, {
+          toValue: 0,
+          duration: 200,
+          useNativeDriver: false
+        })
+      ]).start();
+    }
+  }, [activeSession]);
 
   const handleOpenBottomSheet = (session: TimeSession) => {
     // Close any open swipeables first
@@ -871,7 +909,27 @@ export default function Home() {
         >
           <View className='flex-1 px-4'>
 
-          <View className='flex-row justify-between items-center mx-2 my-2'>
+          <Animated.View 
+              style={{
+                maxHeight: timeCardHeight.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 140] // Adjust based on your TimeCard height
+                }),
+                opacity: timeCardOpacity,
+                overflow: 'hidden',
+                marginBottom: timeCardHeight.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 16] // Animated margin
+                }),
+                transform: [{
+                  translateY: timeCardHeight.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-20, 0]  // Slide down effect
+                  })
+                }]
+              }}
+            >
+          <View className='flex-row justify-between items-center mx-2'>
             <Text className='text-sm font-semibold text-gray-400 dark:text-gray-100'>
               What are you doing now?
             </Text>
@@ -890,14 +948,31 @@ export default function Home() {
                   borderRadius: 4
                 }} 
               />
-              {/* <Text className='text-xs ml-1 text-gray-400 dark:text-gray-500'>
-                {!isOnline ? 'Offline' : isSyncing ? 'Syncing...' : 'Online'}
-              </Text> */}
             </TouchableOpacity>
           </View>
+          </Animated.View>
             
-            {/* Time Card with Animation */}
-            <Animated.View className='mb-4'>
+            {/* Time Card with Animation - Now conditionally rendered with animated height/opacity */}
+            <Animated.View 
+              style={{
+                maxHeight: timeCardHeight.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 140] // Adjust based on your TimeCard height
+                }),
+                opacity: timeCardOpacity,
+                overflow: 'hidden',
+                marginBottom: timeCardHeight.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 16] // Animated margin
+                }),
+                transform: [{
+                  translateY: timeCardHeight.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-20, 0]  // Slide down effect
+                  })
+                }]
+              }}
+            >
               <TimeCard 
                 time={activeSession ? formatTimerDisplay(activeSession) : "0s"} 
                 onTimeChange={() => {}}
@@ -917,6 +992,7 @@ export default function Home() {
               />
             </Animated.View>
             
+            {/* Debug panel - unchanged */}
             {debugMode && (
               <View className='mb-4 p-3 bg-gray-100 dark:bg-gray-800 rounded-lg'>
                 <Text className='text-sm font-bold mb-2 text-gray-700 dark:text-gray-300'>Debug Tools</Text>
@@ -937,10 +1013,19 @@ export default function Home() {
               </View>
             )}
             
+            {/* Sessions list taking full space when no TimeCard */}
             {sessions.length === 0 ? (
-              <View className='flex-1 justify-center items-center'>
+              <Animated.View 
+                className='flex-1 justify-center items-center'
+                style={{
+                  paddingTop: timeCardHeight.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [20, 0]  // Add some padding when TimeCard is hidden
+                  })
+                }}
+              >
                 <Text className='text-gray-500 dark:text-gray-400'>No sessions yet. Tap + to start tracking time.</Text>
-              </View>
+              </Animated.View>
             ) : (
               <FlatList
                 ref={flatListRef}
@@ -949,7 +1034,11 @@ export default function Home() {
                 renderItem={renderSessionItem}
                 ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
                 showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ paddingBottom: 80 }}
+                contentContainerStyle={{ 
+                  paddingBottom: 80,
+                  // Add more top padding when TimeCard is hidden
+                  paddingTop: !activeSession ? 10 : 0,
+                }}
                 maxToRenderPerBatch={5}
                 windowSize={7}
                 removeClippedSubviews={Platform.OS === 'android'}
