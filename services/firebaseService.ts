@@ -1,30 +1,12 @@
-import { db } from '../config/firebase';
 import { TimeSession } from '../types/timeSession';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const getStorageKey = (userId: string) => `time_sessions_${userId}`;
 
-// Function to sync local sessions with Firebase
+// Function to sync local sessions (no Firebase involved)
 export const syncSessionsWithFirebase = async (userId: string) => {
   try {
-    // Get Firebase sessions first
-    const firebaseSnapshot = await db
-      .collection('users')
-      .doc(userId)
-      .collection('sessions')
-      .get();
-
-    const firebaseSessions = firebaseSnapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        ...data,
-        id: doc.id,
-        startTime: new Date(data.startTime),
-        endTime: data.endTime ? new Date(data.endTime) : undefined
-      };
-    }) as TimeSession[];
-
-    // Get local sessions
+    // Just get local sessions
     const storedSessions = await AsyncStorage.getItem(getStorageKey(userId));
     let localSessions: TimeSession[] = [];
     
@@ -37,46 +19,24 @@ export const syncSessionsWithFirebase = async (userId: string) => {
       }));
     }
 
-    // Merge strategies - prefer Firebase data if local storage is empty
-    const mergedSessions = localSessions.length > 0 ? 
-      mergeSessions(localSessions, firebaseSessions) : 
-      firebaseSessions;
-
-    // Update local storage with merged sessions
-    await AsyncStorage.setItem(getStorageKey(userId), JSON.stringify(mergedSessions));
-
-    return mergedSessions;
+    // Return local sessions directly
+    console.log(`[Local] Found ${localSessions.length} local sessions for user ${userId}`);
+    return localSessions;
   } catch (error) {
-    console.error('Error syncing sessions:', error);
+    console.error('Error accessing local sessions:', error);
     throw error;
   }
 };
 
-// Function to update sessions in Firebase
+// Function to update sessions in local storage
 export const updateFirebaseSessions = async (userId: string, sessions: TimeSession[]) => {
   try {
-    const batch = db.batch();
-    const sessionsRef = db.collection('users').doc(userId).collection('sessions');
-
-    // Clear existing sessions
-    const existingSessions = await sessionsRef.get();
-    existingSessions.docs.forEach(doc => {
-      batch.delete(doc.ref);
-    });
-
-    // Add new sessions
-    sessions.forEach(session => {
-      const sessionRef = sessionsRef.doc(session.id);
-      batch.set(sessionRef, {
-        ...session,
-        startTime: session.startTime.toISOString(),
-        endTime: session.endTime ? session.endTime.toISOString() : null
-      });
-    });
-
-    await batch.commit();
+    // Save sessions directly to local storage
+    const storageKey = getStorageKey(userId);
+    await AsyncStorage.setItem(storageKey, JSON.stringify(sessions));
+    console.log(`[Local] Saved ${sessions.length} sessions for user ${userId}`);
   } catch (error) {
-    console.error('Error updating Firebase sessions:', error);
+    console.error('Error saving local sessions:', error);
     throw error;
   }
 };

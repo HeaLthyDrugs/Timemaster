@@ -14,42 +14,13 @@ import { ThemeToggle } from '~/components/ThemeToggle';
 import { cn } from '~/lib/cn';
 import { useColorScheme, useInitialAndroidBarSync } from '~/lib/useColorScheme';
 import { NAV_THEME } from '~/theme';
-import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { NetworkProvider } from '../contexts/NetworkContext';
+import { AuthProvider } from '../contexts/AuthContext';
 
 export {
   // Catch any errors thrown by the Layout component.
   ErrorBoundary,
 } from 'expo-router';
-
-// Auth guard component to handle protected routes
-function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { user, isLoading } = useAuth();
-  const segments = useSegments();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (isLoading) return;
-
-    const inAuthGroup = segments[0] === '(auth)';
-    const inLoginPage = segments[0] === 'login';
-
-    if (!user && !inAuthGroup && !inLoginPage) {
-      // Redirect to login if not authenticated
-      router.replace('/login');
-    } else if (user && (inAuthGroup || inLoginPage)) {
-      // Redirect to main app if already authenticated
-      router.replace('/(tabs)');
-    }
-  }, [user, segments, isLoading, router]);
-
-  if (isLoading) {
-    // You could add a loading screen here
-    return null;
-  }
-
-  return <>{children}</>;
-}
 
 export default function RootLayout() {
   useInitialAndroidBarSync();
@@ -62,25 +33,23 @@ export default function RootLayout() {
         style={isDarkColorScheme ? 'light' : 'dark'}
       />
       
-      <NetworkProvider>
-        <AuthProvider>
+      <AuthProvider>
+        <NetworkProvider>
           <GestureHandlerRootView style={{ flex: 1 }}>
             <BottomSheetModalProvider>
               <ActionSheetProvider>
                 <NavThemeProvider value={NAV_THEME[colorScheme]}>
-                  <AuthGuard>
-                    <Stack screenOptions={SCREEN_OPTIONS}>
-                      <Stack.Screen name="(tabs)" options={TABS_OPTIONS} />
-                      <Stack.Screen name="login" options={LOGIN_OPTIONS} />
-                      <Stack.Screen name="modal" options={MODAL_OPTIONS} />
-                    </Stack>
-                  </AuthGuard>
+                  <Stack screenOptions={SCREEN_OPTIONS}>
+                    <Stack.Screen name="(tabs)" options={TABS_OPTIONS} />
+                    <Stack.Screen name="onboarding" options={ONBOARDING_OPTIONS} />
+                    <Stack.Screen name="settings" options={MODAL_OPTIONS} />
+                  </Stack>
                 </NavThemeProvider>
               </ActionSheetProvider>
             </BottomSheetModalProvider>
           </GestureHandlerRootView>
-        </AuthProvider>
-      </NetworkProvider>
+        </NetworkProvider>
+      </AuthProvider>
     </>
   );
 }
@@ -93,7 +62,7 @@ const TABS_OPTIONS = {
   headerShown: false,
 } as const;
 
-const LOGIN_OPTIONS = {
+const ONBOARDING_OPTIONS = {
   headerShown: false,
 } as const;
 
@@ -106,7 +75,7 @@ const INDEX_OPTIONS = {
 function SettingsIcon() {
   const { colors } = useColorScheme();
   return (
-    <Link href="/modal" asChild>
+    <Link href="/settings" asChild>
       <Pressable className="opacity-80">
         {({ pressed }) => (
           <View className={cn(pressed ? 'opacity-50' : 'opacity-90')}>
@@ -122,5 +91,9 @@ const MODAL_OPTIONS = {
   presentation: 'modal',
   animation: 'fade_from_bottom', // for android
   title: 'Settings',
-  headerRight: () => <ThemeToggle />,
+  headerStyle: {
+    backgroundColor: '#000',
+  },
+  headerShadowVisible: false,
+  // headerRight: () => <ThemeToggle />,
 } as const;

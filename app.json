@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "timemasterv2",
+    "name": "TimeMaster",
     "slug": "timemasterv2",
     "version": "1.0.0",
     "scheme": "timemasterv2",
@@ -11,12 +11,6 @@
     },
     "plugins": [
       "expo-router",
-      "@react-native-firebase/app",
-      "@react-native-firebase/auth",
-      "@react-native-firebase/crashlytics",
-      [
-        "@react-native-google-signin/google-signin"
-      ],
       [
         "expo-dev-launcher",
         {

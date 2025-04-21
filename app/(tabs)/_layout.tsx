@@ -68,7 +68,6 @@ export default function TabLayout() {
         },
         tabBarStyle: {
           backgroundColor: colorScheme === 'dark' ? '#1c1c1c' : 'white',
-
           borderRadius: 40,
           paddingTop: 10,
         },
@@ -97,7 +96,7 @@ export default function TabLayout() {
             />
           ),
           headerRight: () => (
-            <Link href="/modal" asChild>
+            <Link href="/settings" asChild>
               <HeaderButton />
             </Link>
           ),

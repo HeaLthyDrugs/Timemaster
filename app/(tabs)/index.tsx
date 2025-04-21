@@ -21,13 +21,16 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import TimeCard from '~/components/TimeCard';
 import { useSessionManager } from '~/hooks/useSessionManager';
 import { useRouter } from 'expo-router';
-import { Swipeable, RectButton } from 'react-native-gesture-handler';
+import { Swipeable, RectButton, PanGestureHandler, State } from 'react-native-gesture-handler';
 import { TimeSession } from '~/types/timeSession';
 import { useColorScheme } from 'nativewind';
 import { FontAwesome5 } from '@expo/vector-icons';
 import NetInfo from '@react-native-community/netinfo';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// Maximum swipe distance (20% of screen width)
+const MAX_SWIPE_DISTANCE = SCREEN_WIDTH * 0.2;
 
 export default function Home() {
   const router = useRouter();
@@ -43,9 +46,19 @@ export default function Home() {
   // Bottom sheet mode: 'session-edit' or 'timer-view'
   const [bottomSheetMode, setBottomSheetMode] = React.useState<'session-edit' | 'timer-view'>('session-edit');
   
+  // New state for delete confirmation modal
+  const [deleteModalVisible, setDeleteModalVisible] = React.useState(false);
+  const [sessionToDelete, setSessionToDelete] = React.useState<string | null>(null);
+  
   // Animation states
   const fadeAnim = React.useRef(new Animated.Value(1)).current;
   const sessionItemFadeAnims = React.useRef<{[key: string]: Animated.Value}>({});
+  
+  // Store translateX values separately from session objects
+  const sessionTranslateXValues = React.useRef<{[key: string]: Animated.Value}>({});
+  
+  // For tracking items being deleted for animation
+  const itemsBeingDeleted = React.useRef<Set<string>>(new Set());
   
   // Animation value for highlighting a newly activated session
   const highlightAnim = React.useRef(new Animated.Value(0)).current;
@@ -273,6 +286,86 @@ export default function Home() {
     Object.values(swipeableRefs.current).forEach(ref => ref?.close());
   };
 
+  // New method to show delete confirmation
+  const showDeleteConfirmation = (sessionId: string) => {
+    setSessionToDelete(sessionId);
+    setDeleteModalVisible(true);
+  };
+  
+  // New method to handle delete confirmation
+  const confirmDelete = async () => {
+    if (!sessionToDelete) {
+      setDeleteModalVisible(false);
+      return;
+    }
+    
+    // Find the session being deleted to show in UI
+    const sessionBeingDeleted = sessions.find(s => s.id === sessionToDelete);
+    
+    try {
+      console.log(`Deleting session: ${sessionToDelete}`);
+      
+      // First reset the swipe animation - visual feedback for user
+      const translateX = sessionTranslateXValues.current[sessionToDelete];
+      if (translateX) {
+        // Animate back to center
+        Animated.spring(translateX, {
+          toValue: 0,
+          useNativeDriver: true,
+        }).start();
+        
+        // Reset stored offset
+        lastOffsetRefs.current[sessionToDelete] = 0;
+      }
+      
+      // Close the modal first for better UX
+      setDeleteModalVisible(false);
+      
+      // Start fade-out animation
+      if (sessionItemFadeAnims.current[sessionToDelete]) {
+        // Mark as being deleted so we can filter in render
+        itemsBeingDeleted.current.add(sessionToDelete);
+        
+        // Start fade out animation
+        Animated.timing(sessionItemFadeAnims.current[sessionToDelete], {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }).start(async () => {
+          // Perform actual deletion after animation
+          await handleDeleteSession(sessionToDelete);
+          
+          // Remove from being deleted list
+          itemsBeingDeleted.current.delete(sessionToDelete);
+          
+          // Force sync to ensure deletion propagates to server
+          if (isOnline && syncWithServer) {
+            console.log('Forcing sync after deletion');
+            await syncWithServer();
+          }
+        });
+      } else {
+        // Fallback for if animation somehow isn't available
+        await handleDeleteSession(sessionToDelete);
+        
+        // Force sync to ensure deletion propagates to server
+        if (isOnline && syncWithServer) {
+          console.log('Forcing sync after deletion');
+          await syncWithServer();
+        }
+      }
+      
+      console.log(`Successfully deleted session: ${sessionToDelete}`);
+    } catch (error) {
+      console.error('Failed to delete session:', error);
+      // Clean up on error
+      itemsBeingDeleted.current.delete(sessionToDelete || '');
+    } finally {
+      // Reset state
+      setSessionToDelete(null);
+    }
+  };
+
   const saveWithoutStarting = async () => {
     if (!category || subCategory.trim() === '' || title.trim() === '') {
       return;
@@ -403,106 +496,6 @@ export default function Home() {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  // Render left actions (swipe right to reveal)
-  const renderLeftActions = (session: TimeSession, progress: Animated.AnimatedInterpolation<number>, dragX: Animated.AnimatedInterpolation<number>) => {
-    const trans = dragX.interpolate({
-      inputRange: [0, 50, 100, 101],
-      outputRange: [-20, 0, 0, 1],
-      extrapolate: 'clamp',
-    });
-    
-    const opacity = dragX.interpolate({
-      inputRange: [0, 50, 100],
-      outputRange: [0, 1, 1],
-      extrapolate: 'clamp',
-    });
-
-    const scale = dragX.interpolate({
-      inputRange: [0, 50, 100],
-      outputRange: [0.8, 1, 1],
-      extrapolate: 'clamp',
-    });
-
-    // If session is active, show stop button; otherwise show resume button
-    const iconName = session.isActive ? "pause" : "play";
-    const actionText = session.isActive ? "Stop" : "Resume";
-    
-    // Get color based on category
-    const categoryStyle = getCategoryColor(session.category);
-    // Use more pastel-like colors for the action buttons
-    const bgColor = session.isActive ? 
-      isDark ? 'rgba(255, 149, 0, 0.8)' : 'rgba(255, 149, 0, 0.7)' : 
-      categoryStyle.bg;
-    
-    return (
-      <Animated.View style={[
-        styles.leftAction, 
-        { 
-          opacity, 
-          transform: [{ translateX: trans }, { scale }], 
-          backgroundColor: bgColor 
-        }
-      ]}>
-        <TouchableOpacity
-          style={styles.actionButton}
-          onPress={() => {
-            if (session.isActive) {
-              handleStopSession();
-            } else {
-              handleResumeSession(session.id);
-            }
-          }}
-        >
-          <Animated.View>
-            <Ionicons name={iconName} size={28} color={categoryStyle.text} />
-            <Text style={[styles.actionText, { color: categoryStyle.text }]}>{actionText}</Text>
-          </Animated.View>
-        </TouchableOpacity>
-      </Animated.View>
-    );
-  };
-
-  // Render right actions (swipe left to reveal)
-  const renderRightActions = (session: TimeSession, progress: Animated.AnimatedInterpolation<number>, dragX: Animated.AnimatedInterpolation<number>) => {
-    const trans = dragX.interpolate({
-      inputRange: [-100, -50, 0],
-      outputRange: [0, 0, 40],
-      extrapolate: 'clamp',
-    });
-    
-    const opacity = dragX.interpolate({
-      inputRange: [-100, -50, 0],
-      outputRange: [1, 1, 0],
-      extrapolate: 'clamp',
-    });
-
-    const scale = dragX.interpolate({
-      inputRange: [-100, -50, 0],
-      outputRange: [1, 1, 0.8],
-      extrapolate: 'clamp',
-    });
-    
-    return (
-      <Animated.View style={[
-        styles.rightAction, 
-        { 
-          opacity, 
-          transform: [{ translateX: trans }, { scale }] 
-        }
-      ]}>
-        <TouchableOpacity
-          style={[styles.actionButton, styles.deleteButton]}
-          onPress={() => handleDeleteSession(session.id)}
-        >
-          <Animated.View>
-            <Ionicons name="trash-outline" size={28} color="white" />
-            <Text style={styles.actionText}>Delete</Text>
-          </Animated.View>
-        </TouchableOpacity>
-      </Animated.View>
-    );
-  };
-
   // Theme colors based on category
   const getCategoryColor = (category: string) => {
     switch (category) {
@@ -548,127 +541,281 @@ export default function Home() {
     return bg;
   };
 
-  // In renderSessionItem function, replace the card UI
+  // Refs to track gesture state for each item
+  const lastOffsetRefs = React.useRef<{[key: string]: number}>({});
+  const isSwipeActiveRefs = React.useRef<{[key: string]: boolean}>({});
+
+  // In renderSessionItem function, add the opacity animation
   const renderSessionItem = React.useCallback(({ item }: { item: TimeSession }) => {
     // Create animation value for this item if it doesn't exist
     if (!sessionItemFadeAnims.current[item.id]) {
       sessionItemFadeAnims.current[item.id] = new Animated.Value(1);
     }
     
-    const itemFadeAnim = sessionItemFadeAnims.current[item.id];
+    // Create translation X value for this swipe if it doesn't exist
+    if (!sessionTranslateXValues.current[item.id]) {
+      sessionTranslateXValues.current[item.id] = new Animated.Value(0);
+    }
+    
+    // Initialize last offset for this item if it doesn't exist
+    if (lastOffsetRefs.current[item.id] === undefined) {
+      lastOffsetRefs.current[item.id] = 0;
+    }
+    
+    // Initialize swipe active state for this item if it doesn't exist
+    if (isSwipeActiveRefs.current[item.id] === undefined) {
+      isSwipeActiveRefs.current[item.id] = false;
+    }
+    
+    const translateX = sessionTranslateXValues.current[item.id];
+    const fadeAnimation = sessionItemFadeAnims.current[item.id];
     
     // Get category styling
     const categoryStyle = getCategoryColor(item.category);
     
-    // Calculate the highlight background color for active sessions
-    const highlightBackground = item.isActive ? 
-      highlightAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: ['rgba(108, 92, 231, 0)', categoryStyle.bg]
-      }) : 'transparent';
+    // Get highlight background for active sessions
+    const highlightBackground = item.isActive 
+      ? highlightAnim.interpolate({
+          inputRange: [0, 1],
+          outputRange: ['rgba(108, 92, 231, 0)', categoryStyle.bg]
+        }) 
+      : 'transparent';
+    
+    // Handler for pan gesture
+    const onGestureEvent = Animated.event(
+      [{ nativeEvent: { translationX: translateX } }],
+      { useNativeDriver: true }
+    );
+    
+    // Handler for gesture state changes
+    const onHandlerStateChange = (event: any) => {
+      if (event.nativeEvent.oldState === State.ACTIVE) {
+        // Gesture ended
+        isSwipeActiveRefs.current[item.id] = false;
+        lastOffsetRefs.current[item.id] = lastOffsetRefs.current[item.id] + event.nativeEvent.translationX;
+        
+        // Clamp the offset to the maximum swipe distance
+        if (lastOffsetRefs.current[item.id] > MAX_SWIPE_DISTANCE) {
+          lastOffsetRefs.current[item.id] = MAX_SWIPE_DISTANCE;
+        } else if (lastOffsetRefs.current[item.id] < -MAX_SWIPE_DISTANCE) {
+          lastOffsetRefs.current[item.id] = -MAX_SWIPE_DISTANCE;
+        }
+        
+        // Decide whether to snap to edge or back to center
+        const snapPoint = 
+          lastOffsetRefs.current[item.id] > MAX_SWIPE_DISTANCE / 2 
+            ? MAX_SWIPE_DISTANCE
+            : lastOffsetRefs.current[item.id] < -MAX_SWIPE_DISTANCE / 2
+              ? -MAX_SWIPE_DISTANCE
+              : 0;
+        
+        // Animate to snap point
+        Animated.spring(translateX, {
+          toValue: snapPoint,
+          useNativeDriver: true,
+          bounciness: 0,
+        }).start();
+        
+        lastOffsetRefs.current[item.id] = snapPoint;
+        
+        // Handle action triggers when snapped to edges
+        if (snapPoint === MAX_SWIPE_DISTANCE) {
+          // Left action (resume/stop)
+          if (item.isActive) {
+            handleStopSession();
+          } else {
+            handleResumeSession(item.id);
+          }
+          // Reset back to center after action
+          setTimeout(() => {
+            Animated.spring(translateX, {
+              toValue: 0,
+              useNativeDriver: true,
+            }).start();
+            lastOffsetRefs.current[item.id] = 0;
+          }, 250);
+        } else if (snapPoint === -MAX_SWIPE_DISTANCE) {
+          // Right action (delete) - Show confirmation instead of deleting directly
+          showDeleteConfirmation(item.id);
+          
+          // Keep the swipe open until user confirms or cancels
+          // We'll reset it after the action in those handlers
+        }
+      } else if (event.nativeEvent.state === State.ACTIVE) {
+        isSwipeActiveRefs.current[item.id] = true;
+        translateX.setValue(lastOffsetRefs.current[item.id] + event.nativeEvent.translationX);
+      }
+    };
+    
+    // Calculate the interpolated values for the action buttons
+    const leftActionOpacity = translateX.interpolate({
+      inputRange: [0, MAX_SWIPE_DISTANCE / 2, MAX_SWIPE_DISTANCE],
+      outputRange: [0, 0.5, 1],
+      extrapolate: 'clamp',
+    });
+    
+    const rightActionOpacity = translateX.interpolate({
+      inputRange: [-MAX_SWIPE_DISTANCE, -MAX_SWIPE_DISTANCE / 2, 0],
+      outputRange: [1, 0.5, 0],
+      extrapolate: 'clamp',
+    });
+    
+    // Icon and text for left action based on session state
+    const leftIconName = item.isActive ? "pause" : "play";
+    const leftActionText = item.isActive ? "Stop" : "Resume";
+    const leftBgColor = item.isActive
+      ? isDark ? 'rgba(255, 149, 0, 0.8)' : 'rgba(255, 149, 0, 0.7)'
+      : categoryStyle.bg;
     
     return (
-      <Swipeable
-        ref={ref => swipeableRefs.current[item.id] = ref}
-        renderLeftActions={(progress, dragX) => renderLeftActions(item, progress, dragX)}
-        renderRightActions={(progress, dragX) => renderRightActions(item, progress, dragX)}
-        friction={2}
-        leftThreshold={80}
-        rightThreshold={80}
-        overshootLeft={false}
-        overshootRight={false}
+      <Animated.View 
+        style={[
+          styles.swipeableContainer,
+          { opacity: fadeAnimation }
+        ]}
       >
+        {/* Left Action (Resume/Stop) */}
         <Animated.View 
+          style={[
+            styles.leftAction,
+            { 
+              opacity: leftActionOpacity,
+              backgroundColor: leftBgColor
+            }
+          ]}
         >
-          <TouchableOpacity 
-            onPress={() => {
-              handleOpenBottomSheet(item);
-              prepareEditSession(item);
-            }}
-            className={`p-4 rounded-3xl ${
-              item.isActive 
-                ? 'bg-white dark:bg-gray-800' 
-                : 'bg-white dark:bg-gray-900'
-            }`}
-          >
-            {item.isActive ? (
-              // Active session UI
-              <View className='flex-row items-center'>
-                <View className='h-12 w-12 rounded-xl justify-center items-center mr-4' 
-                  style={{ backgroundColor: categoryStyle.bg }}>
-                  <FontAwesome5 name={categoryStyle.icon} size={20} color={categoryStyle.text} style={{ opacity: 0.7 }} />
-                </View>
-                <View className='flex-1'>
-                  <Text className='text-lg font-bold text-gray-800 dark:text-gray-100'>
-                    {item.subCategory}
-                  </Text>
-                  <View className='flex-row flex-wrap'>
-                    <View 
-                      style={{ backgroundColor: categoryStyle.bg, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 4 }}
-                    >
-                      <Text style={{ color: categoryStyle.text, fontSize: 12, fontWeight: '500' }}>
-                        {item.title}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-                <View className='items-end'>
-                  <Text className='text-xl font-bold text-gray-900 dark:text-gray-100'>
-                    {formatTimerDisplay(item)}
-                  </Text>
-                  <TouchableOpacity 
-                    onPress={() => handleStopSession()}
-                    className='mt-1'
-                  >
-                    <Ionicons name="pause" size={24} color={categoryStyle.text} style={{ opacity: 0.8 }} />
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ) : (
-              // Paused or saved session UI
-              <View className='flex-row items-center'>
-                <View className='h-12 w-12 rounded-xl justify-center items-center mr-4' 
-                  style={{ backgroundColor: categoryStyle.bg }}>
-                  <FontAwesome5 name={categoryStyle.icon} size={20} color={categoryStyle.text} style={{ opacity: 0.7 }} />
-                </View>
-                <View className='flex-1'>
-                  <Text className='text-lg font-medium text-gray-500 dark:text-gray-100'>
-                    {item.subCategory}
-                  </Text>
-                  <View className='flex-row flex-wrap'>
-                    <View 
-                      style={{ backgroundColor: categoryStyle.bg, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 4 }}
-                    >
-                      <Text className='font-medium' style={{ color: categoryStyle.text, fontSize: 12, }}>
-                        {item.title}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-                <View className='items-end'>
-                  <Text className='text-sm text-gray-500 dark:text-gray-400'>
-                    {item.saved ? '' : formatTimerDisplay(item)}
-                  </Text>
-                  <TouchableOpacity 
-                    onPress={() => handleResumeSession(item.id)}
-                    className='mt-1'
-                  >
-                    <Ionicons name="play" size={24} color={categoryStyle.text} style={{ opacity: 0.8 }} />
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
-          </TouchableOpacity>
+          <View style={styles.actionButton}>
+            <Ionicons name={leftIconName} size={28} color={categoryStyle.text} />
+            <Text style={[styles.actionText, { color: categoryStyle.text }]}>{leftActionText}</Text>
+          </View>
         </Animated.View>
-      </Swipeable>
+        
+        {/* Right Action (Delete) */}
+        <Animated.View 
+          style={[
+            styles.rightAction,
+            { opacity: rightActionOpacity }
+          ]}
+        >
+          <View style={styles.actionButton}>
+            <Ionicons name="trash-outline" size={28} color="white" />
+            <Text style={styles.actionText}>Delete</Text>
+          </View>
+        </Animated.View>
+        
+        {/* Main Content */}
+        <PanGestureHandler
+          onGestureEvent={onGestureEvent}
+          onHandlerStateChange={onHandlerStateChange}
+        >
+          <Animated.View 
+            style={[
+              styles.rowFront,
+              {
+                transform: [
+                  { 
+                    translateX: translateX.interpolate({
+                      inputRange: [-MAX_SWIPE_DISTANCE, 0, MAX_SWIPE_DISTANCE],
+                      outputRange: [-MAX_SWIPE_DISTANCE, 0, MAX_SWIPE_DISTANCE],
+                      extrapolate: 'clamp',
+                    })
+                  }
+                ]
+              }
+            ]}
+          >
+            <TouchableOpacity 
+              onPress={() => {
+                handleOpenBottomSheet(item);
+                prepareEditSession(item);
+              }}
+              className={`p-4 rounded-3xl ${
+                item.isActive 
+                  ? 'bg-white dark:bg-gray-800' 
+                  : 'bg-white dark:bg-gray-900'
+              }`}
+              activeOpacity={0.8}
+            >
+              {item.isActive ? (
+                // Active session UI
+                <View className='flex-row items-center'>
+                  <View className='h-12 w-12 rounded-xl justify-center items-center mr-4' 
+                    style={{ backgroundColor: categoryStyle.bg }}>
+                    <FontAwesome5 name={categoryStyle.icon} size={20} color={categoryStyle.text} style={{ opacity: 0.7 }} />
+                  </View>
+                  <View className='flex-1'>
+                    <Text className='text-lg font-bold text-gray-800 dark:text-gray-100'>
+                      {item.subCategory}
+                    </Text>
+                    <View className='flex-row flex-wrap'>
+                      <View 
+                        style={{ backgroundColor: categoryStyle.bg, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 4 }}
+                      >
+                        <Text style={{ color: categoryStyle.text, fontSize: 12, fontWeight: '500' }}>
+                          {item.title}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                  <View className='items-end'>
+                    <Text className='text-xl font-bold text-gray-900 dark:text-gray-100'>
+                      {formatTimerDisplay(item)}
+                    </Text>
+                    <TouchableOpacity 
+                      onPress={() => handleStopSession()}
+                      className='mt-1'
+                    >
+                      <Ionicons name="pause" size={24} color={categoryStyle.text} style={{ opacity: 0.8 }} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ) : (
+                // Paused or saved session UI
+                <View className='flex-row items-center'>
+                  <View className='h-12 w-12 rounded-xl justify-center items-center mr-4' 
+                    style={{ backgroundColor: categoryStyle.bg }}>
+                    <FontAwesome5 name={categoryStyle.icon} size={20} color={categoryStyle.text} style={{ opacity: 0.7 }} />
+                  </View>
+                  <View className='flex-1'>
+                    <Text className='text-lg font-medium text-gray-500 dark:text-gray-100'>
+                      {item.subCategory}
+                    </Text>
+                    <View className='flex-row flex-wrap'>
+                      <View 
+                        style={{ backgroundColor: categoryStyle.bg, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 4 }}
+                      >
+                        <Text className='font-medium' style={{ color: categoryStyle.text, fontSize: 12, }}>
+                          {item.title}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                  <View className='items-end'>
+                    <Text className='text-sm text-gray-500 dark:text-gray-400'>
+                      {item.saved ? '' : formatTimerDisplay(item)}
+                    </Text>
+                    <TouchableOpacity 
+                      onPress={() => handleResumeSession(item.id)}
+                      className='mt-1'
+                    >
+                      <Ionicons name="play" size={24} color={categoryStyle.text} style={{ opacity: 0.8 }} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            </TouchableOpacity>
+          </Animated.View>
+        </PanGestureHandler>
+      </Animated.View>
     );
   }, [
     currentTime, 
     formatTimerDisplay, 
     handleOpenBottomSheet, 
-    prepareEditSession, 
-    renderLeftActions, 
-    renderRightActions,
+    prepareEditSession,
+    handleStopSession,
+    handleResumeSession,
+    handleDeleteSession,
     highlightAnim,
     isDark
   ]);
@@ -797,7 +944,7 @@ export default function Home() {
             ) : (
               <FlatList
                 ref={flatListRef}
-                data={sessions}
+                data={sessions.filter(s => !itemsBeingDeleted.current.has(s.id))}
                 keyExtractor={(item) => item.id}
                 renderItem={renderSessionItem}
                 ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
@@ -925,6 +1072,90 @@ export default function Home() {
                 </View>
               </View>
             </Modal>
+
+            {/* Delete Confirmation Modal */}
+            <Modal
+              animationType="fade"
+              transparent={true}
+              visible={deleteModalVisible}
+              onRequestClose={() => {
+                setDeleteModalVisible(false);
+                // Reset any open swipe animations
+                if (sessionToDelete) {
+                  const translateX = sessionTranslateXValues.current[sessionToDelete];
+                  if (translateX) {
+                    Animated.spring(translateX, {
+                      toValue: 0,
+                      useNativeDriver: true,
+                    }).start();
+                    lastOffsetRefs.current[sessionToDelete] = 0;
+                  }
+                  setSessionToDelete(null);
+                }
+              }}
+            >
+              <View className='flex-1 justify-center items-center bg-black/40 px-5'>
+                <View className='bg-white dark:bg-gray-800 rounded-3xl p-5 w-full max-w-lg'>
+                  <Text className='text-2xl font-bold mb-3 text-center text-gray-800 dark:text-gray-100'>Delete Session?</Text>
+                  
+                  {sessionToDelete && (
+                    <View className='p-4 mb-4 bg-gray-100 dark:bg-gray-700 rounded-xl'>
+                      <Text className='font-semibold mb-1 text-gray-800 dark:text-gray-200'>
+                        {sessions.find(s => s.id === sessionToDelete)?.subCategory || 'Session'}
+                      </Text>
+                      <Text className='text-sm text-gray-600 dark:text-gray-300'>
+                        {sessions.find(s => s.id === sessionToDelete)?.title || ''}
+                      </Text>
+                      {sessions.find(s => s.id === sessionToDelete)?.elapsedTime && (
+                        <Text className='text-sm mt-1 text-gray-500 dark:text-gray-400'>
+                          Duration: {formatTimerDisplay(sessions.find(s => s.id === sessionToDelete)!)}
+                        </Text>
+                      )}
+                    </View>
+                  )}
+                  
+                  <Text className='mb-6 text-center text-gray-600 dark:text-gray-300'>
+                    This action cannot be undone and will remove this session from all your devices.
+                  </Text>
+                  
+                  {/* Action Buttons */}
+                  <View className='flex-row justify-between mb-2'>
+                    <TouchableOpacity 
+                      onPress={confirmDelete}
+                      className='bg-red-500 rounded-xl py-3 flex-1 mr-2'
+                    >
+                      <Text className='text-white font-medium text-center'>
+                        Delete
+                      </Text>
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity 
+                      onPress={() => {
+                        // Reset the swipe animation
+                        if (sessionToDelete) {
+                          const translateX = sessionTranslateXValues.current[sessionToDelete];
+                          if (translateX) {
+                            Animated.spring(translateX, {
+                              toValue: 0,
+                              useNativeDriver: true,
+                            }).start();
+                            lastOffsetRefs.current[sessionToDelete] = 0;
+                          }
+                        }
+                        setDeleteModalVisible(false);
+                        setSessionToDelete(null);
+                      }}
+                      className='bg-gray-200 dark:bg-gray-700 rounded-xl py-3 flex-1 ml-2'
+                    >
+                      <Text className='text-gray-500 dark:text-gray-200 font-medium text-center'>
+                        Cancel
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
           </View>
           
           {/* Bottom Sheet Modal */}
@@ -1118,26 +1349,35 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   rightAction: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    flex: 1,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: MAX_SWIPE_DISTANCE,
     backgroundColor: 'rgba(255, 59, 48, 0.8)',
-    borderRadius: 20,
-    overflow: 'hidden',
-  },
-  leftAction: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    borderRadius: 20,
-    overflow: 'hidden',
-  },
-  actionButton: {
-    width: 100,
-    height: '100%',
+    borderTopRightRadius: 20,
+    borderBottomRightRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 1,
+  },
+  leftAction: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: MAX_SWIPE_DISTANCE,
+    borderTopLeftRadius: 20,
+    borderBottomLeftRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  actionButton: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: '100%',
+    height: '100%',
   },
   deleteButton: {
     backgroundColor: 'rgba(255, 59, 48, 0.8)',
@@ -1150,5 +1390,13 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 16,
     marginTop: 4,
+  },
+  swipeableContainer: {
+    position: 'relative',
+    marginBottom: 10,
+    overflow: 'hidden',
+  },
+  rowFront: {
+    zIndex: 2,
   },
 });

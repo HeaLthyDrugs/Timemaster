@@ -28,10 +28,6 @@
           "toggle"
         ]
       }
-    },
-    {
-      "name": "firebase",
-      "type": "authentication"
     }
   ],
   "flags": {
