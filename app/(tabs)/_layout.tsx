@@ -68,7 +68,7 @@ export default function TabLayout() {
         },
         tabBarStyle: {
           backgroundColor: colorScheme === 'dark' ? '#1c1c1c' : 'white',
-          borderRadius: 40,
+          // borderRadius: 40,
           paddingTop: 10,
         },
         animationEnabled: true,
